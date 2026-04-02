@@ -1,13 +1,43 @@
 # Azure Migrate Appliance Readiness Check
 
+[![PowerShell](https://img.shields.io/badge/PowerShell-5.1%2B-blue.svg)](https://github.com/PowerShell/PowerShell)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Status](https://img.shields.io/badge/Status-Production%20Ready-success.svg)]()
+
 Comprehensive PowerShell script to validate prerequisites, network connectivity, authentication, and Azure RBAC permissions required for Azure Migrate appliance deployment.
 
-## 📋 Overview
+## 📚 Documentation
 
-This script performs a complete readiness assessment for Azure Migrate appliance deployment, covering:
+| Document | Description |
+|----------|-------------|
+| **[Quick Start Guide](QUICKSTART.md)** | 🚀 Get started in 3 steps - Perfect for first-time users |
+| **[Command Examples](EXAMPLES.md)** | 💻 20+ copy-paste ready examples for all scenarios |
+| **[Contributing Guidelines](CONTRIBUTING.md)** | 👥 How to contribute to this project |
+| **[License](LICENSE)** | 📄 MIT License details |
+| **[This README](#)** | 📖 Complete reference documentation |
+| **[Sample CSV](PhysicalServersExample.csv)** | 📊 Template for physical servers connectivity testing |
+
+---
+
+## ⚡ Quick Start
+
+**New to this script?** → Start with the **[Quick Start Guide](QUICKSTART.md)** (5 minute read)
+
+### Run in 3 Steps:
+
+```powershell
+# 1. Download or clone this repository
+# 2. Open PowerShell as Administrator
+# 3. Run the script
+.\AzureMigrateApplianceReadinessCheck.ps1
+```
+
+The script will interactively guide you through all options!
+
+### What It Validates:
 
 - ✅ **Prerequisites**: PowerShell version, execution policy, OS version, hardware requirements
-- ✅ **Network Connectivity**: Azure public/private endpoints, SQL ports, Web App ports
+- ✅ **Network Connectivity**: Azure public/private endpoints, SQL ports, Web App ports  
 - ✅ **Azure Authentication**: Device Code Flow and Entra ID App Registration methods
 - ✅ **RBAC Validation**: Subscription and resource group permissions
 - ✅ **Migration Configuration**: Agentless (VMware, Hyper-V) and Agent-based (Physical servers)
@@ -16,28 +46,114 @@ This script performs a complete readiness assessment for Azure Migrate appliance
 
 ---
 
-## 🚀 Quick Start
+## 📖 Table of Contents
 
-### Interactive Mode (Recommended for first-time use)
+- [Documentation](#-documentation)
+- [Quick Start](#-quick-start)
+- [Complete Workflow](#-complete-workflow-first-time-users)
+  - [Visual Workflow Diagram](#visual-workflow)
+- [Interactive vs Automated Mode](#-interactive-vs-automated-mode)
+- [Prerequisites](#-prerequisites)
+- [Parameters Reference](#-parameters)
+- [Usage Examples](#-usage-examples)
+  - [VMware Agentless](#scenario-1-vmware-agentless-migration-with-sql-discovery)
+  - [Hyper-V Agentless](#scenario-3-hyper-v-with-private-endpoints)
+  - [Physical Agent-Based](#scenario-2-physical-servers-with-agent-based-discovery)
+- [Migration Approaches](#-migration-approaches)
+- [Authentication Methods](#-authentication-methods)
+- [Network Connectivity](#-network-connectivity)
+- [Report Output](#-report-output)
+- [Troubleshooting](#-troubleshooting)
+- [Additional Resources](#-additional-resources)
+- [Best Practices](#-best-practices)
+- [Version History](#-version-history)
+- [License](#-license)
+- [Contributing](#-contributing)
 
+---
+
+## 🎯 Complete Workflow (First Time Users)
+
+**New to Azure Migrate?** Follow this workflow for a successful validation:
+
+1. **📖 Read the Quick Start** → **[QUICKSTART.md](QUICKSTART.md)** (5 minutes)
+   - Understand what the script does
+   - Check prerequisites checklist
+   - See what output to expect
+
+2. **💻 Run the Script Interactively** 
+   ```powershell
+   .\AzureMigrateApplianceReadinessCheck.ps1
+   ```
+   - Accept the information popup
+   - Follow the prompts (takes 5-10 minutes)
+   - Sign in to Azure when asked
+
+3. **📊 Review the Results**
+   - HTML report opens automatically in your browser
+   - Check for any ❌ Failed or ⚠️ Warning items
+   - Review recommendations for each issue
+
+4. **🔧 Fix Issues if Needed**
+   - Follow recommendations in the report
+   - See [Troubleshooting](#-troubleshooting) section below
+   - Re-run the script to verify fixes
+
+5. **✅ Proceed with Appliance Deployment**
+   - Once all checks pass, you're ready!
+   - Follow Azure Migrate documentation to deploy appliance
+   - Keep the report for future reference
+
+**Need automation?** After your first run, check **[EXAMPLES.md](EXAMPLES.md)** for parameter-based execution examples.
+
+### Visual Workflow
+
+```mermaid
+flowchart TD
+    A[📥 Start: Download Script] --> B[📖 Read QUICKSTART.md]
+    B --> C[💻 Run Script Interactively]
+    C --> D{Accept Info Popup?}
+    D -->|Yes| E[⚙️ Configure Options]
+    D -->|No| Z[❌ Exit]
+    E --> F[Select Migration Approach]
+    F --> G[Select Discovery Type]
+    G --> H[Optional: SQL/WebApp Discovery]
+    H --> I[🌐 Network Connectivity Tests]
+    I --> J[🔐 Azure Authentication]
+    J --> K[✅ RBAC Validation]
+    K --> L[📊 Generate HTML Report]
+    L --> M{All Checks Passed?}
+    M -->|✅ Yes| N[🚀 Deploy Azure Migrate Appliance]
+    M -->|❌ No| O[🔧 Review Report & Fix Issues]
+    M -->|⚠️ Warnings| O
+    O --> P[Re-run Script]
+    P --> I
+    N --> Q[✨ Migration Ready!]
+```
+
+---
+
+## 🚀 Interactive vs Automated Mode
+
+### Interactive Mode (Recommended for Manual Setup)
 ```powershell
+# Simply run - the script will prompt you for everything
 .\AzureMigrateApplianceReadinessCheck.ps1
 ```
 
-The script will guide you through all options with prompts.
-
-### Parameter-Based Mode (For automation)
-
+### Automated Mode (For CI/CD or Repeated Runs)
 ```powershell
 .\AzureMigrateApplianceReadinessCheck.ps1 `
+    -InteractiveMode $false `
     -MigrationApproach Agentless `
     -DiscoveryType VMware `
     -EndpointType Public `
     -AuthMethod DeviceCodeFlow `
     -IncludeSQLDiscovery $true `
-    -SQLPort 1433 `
-    -InteractiveMode $false
+    -SQLPort 1433
 ```
+
+**📚 More Examples:** See **[EXAMPLES.md](EXAMPLES.md)** for 20+ ready-to-use commands
 
 ---
 
@@ -115,7 +231,7 @@ The script will guide you through all options with prompts.
 - Network connectivity to discovery endpoints
 - Physical server connectivity validation (via CSV)
 
-**CSV Format** (PhysicalServers.csv):
+**CSV Format** - Use the included **[PhysicalServersExample.csv](PhysicalServersExample.csv)** as a template:
 ```csv
 hostname,ip
 server01,192.168.1.10
@@ -130,6 +246,8 @@ webserver,10.20.30.40
     -DiscoveryType Physical `
     -PhysicalServersCSV "C:\Servers.csv"
 ```
+
+**📚 More Examples:** See **[EXAMPLES.md](EXAMPLES.md#physical-servers-with-csv)** for CSV generation scripts
 
 **Reference**: [Physical Server Support Matrix](https://learn.microsoft.com/azure/migrate/migrate-support-matrix-physical)
 
@@ -237,6 +355,8 @@ Timestamped log file capturing all script actions, including:
 
 ## 📋 Example Scenarios
 
+**💡 Tip:** For 20+ more examples including automation scripts, CI/CD integration, and advanced scenarios, see **[EXAMPLES.md](EXAMPLES.md)**
+
 ### Scenario 1: VMware Agentless Migration with SQL Discovery
 
 ```powershell
@@ -262,6 +382,8 @@ Timestamped log file capturing all script actions, including:
     -InteractiveMode $false
 ```
 
+**📄 CSV Template:** Download [PhysicalServersExample.csv](PhysicalServersExample.csv) to get started
+
 ### Scenario 3: Hyper-V with Private Endpoints
 
 ```powershell
@@ -272,9 +394,18 @@ Timestamped log file capturing all script actions, including:
     -IncludeWebAppDiscovery $true
 ```
 
+**📚 More Scenarios:** Check **[EXAMPLES.md](EXAMPLES.md)** for:
+- Custom SQL ports
+- Network share reports  
+- Scheduled validation tasks
+- Azure DevOps pipeline integration
+- Multiple environment validation
+
 ---
 
 ## 🔧 Troubleshooting
+
+**💡 Quick Help:** Check the **[Quick Start Guide](QUICKSTART.md#troubleshooting)** for beginner-friendly troubleshooting
 
 ### Common Issues
 
@@ -379,17 +510,28 @@ For issues with:
 
 ## 📄 License
 
-This script is provided as-is for Azure Migrate appliance readiness validation.
+This project is licensed under the MIT License - see the **[LICENSE](LICENSE)** file for details.
+
+Copyright © 2026 Azure Migrate Readiness Check Contributors
 
 ---
 
 ## 👥 Contributing
 
-Suggestions and improvements are welcome. Please ensure any modifications maintain:
-- Comprehensive error handling
-- Detailed logging
-- Clear user guidance
-- Microsoft Learn documentation references
+We welcome contributions! Please see our **[Contributing Guidelines](CONTRIBUTING.md)** for details on:
+
+- How to report issues
+- How to submit changes
+- Code guidelines and best practices
+- Areas where we need help
+
+**Quick Contributing Steps:**
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Submit a pull request
+
+For questions, feel free to open an issue or discussion.
 
 ---
 
