@@ -43,6 +43,15 @@
 .PARAMETER ReportPath
     Path for HTML report (default: script directory)
 
+.PARAMETER IncludeSQLDiscovery
+    Enable SQL Server discovery validation checks (default: $false)
+
+.PARAMETER SQLPort
+    SQL Server port for discovery connectivity checks (default: 1433)
+
+.PARAMETER IncludeWebAppDiscovery
+    Enable Web Application discovery validation - checks WinRM ports 5985/5986 and SSH port 22 (default: $false)
+
 .EXAMPLE
     .\AzureMigrateApplianceReadinessCheck.ps1
     Run in fully interactive mode
@@ -50,6 +59,18 @@
 .EXAMPLE
     .\AzureMigrateApplianceReadinessCheck.ps1 -MigrationApproach Agentless -DiscoveryType VMware -EndpointType Public
     Run with specific parameters
+
+.EXAMPLE
+    .\AzureMigrateApplianceReadinessCheck.ps1 -MigrationApproach Agentless -DiscoveryType VMware -IncludeSQLDiscovery $true -SQLPort 1433
+    VMware agentless migration with SQL Server discovery on default port
+
+.EXAMPLE
+    .\AzureMigrateApplianceReadinessCheck.ps1 -MigrationApproach AgentBased -DiscoveryType Physical -PhysicalServersCSV "C:\Servers.csv"
+    Physical servers agent-based migration with CSV connectivity testing
+
+.EXAMPLE
+    .\AzureMigrateApplianceReadinessCheck.ps1 -InteractiveMode $false -MigrationApproach Agentless -DiscoveryType VMware -AuthMethod EntraIDApp -SubscriptionId "12345678-1234-1234-1234-123456789012" -ResourceGroupName "AzureMigrateRG"
+    Fully automated non-interactive run with Entra ID App authentication
 
 .NOTES
     File Name      : AzureMigrateApplianceReadinessCheck.ps1

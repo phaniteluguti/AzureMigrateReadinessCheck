@@ -6,6 +6,41 @@
 
 Comprehensive PowerShell script to validate prerequisites, network connectivity, authentication, and Azure RBAC permissions required for Azure Migrate appliance deployment.
 
+---
+
+## 💡 Why This Repository Exists
+
+Deploying an Azure Migrate appliance is not always straightforward. In practice, migrations frequently stall or fail due to issues that could have been caught **before** the appliance was ever deployed — things like:
+
+- Firewall rules blocking required Azure endpoints
+- Missing Contributor permissions on the subscription or resource group
+- Device Code Flow authentication blocked by an organizational policy
+- Hardware on the appliance VM not meeting minimum requirements
+- Physical servers that are unreachable from the appliance network
+- Expired or misconfigured Entra ID App certificates
+
+These issues typically surface **mid-deployment or after**, causing delays, rollbacks, and escalation to multiple teams.
+
+**This repository solves that problem.** It gives migration engineers, IT administrators, and cloud architects a single script to run on the appliance machine *before* any deployment starts. It validates every prerequisite in one pass and produces a report you can review, share with your team, or keep for audit purposes.
+
+### Who Is This For?
+
+| Role | How You Use This |
+|------|-----------------|
+| **Migration Engineer** | Run before every appliance deployment to catch blockers early |
+| **IT Administrator** | Validate network and permissions without needing Azure expertise |
+| **Cloud Architect** | Review the HTML report to confirm environment readiness |
+| **DevOps / Automation** | Integrate into CI/CD pipelines for repeatable validation |
+
+### When Should You Run This?
+
+- ✅ **Before** deploying the Azure Migrate appliance
+- ✅ **After** a network or firewall change that may affect appliance connectivity
+- ✅ **When troubleshooting** an appliance that stopped working
+- ✅ **Periodically** (e.g. weekly) to ensure continued compliance
+
+---
+
 ## 📚 Documentation
 
 | Document | Description |
@@ -48,6 +83,7 @@ The script will interactively guide you through all options!
 
 ## 📖 Table of Contents
 
+- [Why This Repository Exists](#-why-this-repository-exists)
 - [Documentation](#-documentation)
 - [Quick Start](#-quick-start)
 - [Complete Workflow](#-complete-workflow-first-time-users)
