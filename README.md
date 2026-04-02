@@ -71,13 +71,15 @@ The script will interactively guide you through all options!
 
 ### What It Validates:
 
-- ✅ **Prerequisites**: PowerShell version, execution policy, OS version, hardware requirements
-- ✅ **Network Connectivity**: Azure public/private endpoints, SQL ports, Web App ports  
+- ✅ **Prerequisites**: PowerShell version, execution policy, OS version, hardware requirements, FIPS mode, time sync
+- ✅ **Network Connectivity**: Azure public/private/government cloud endpoints, discovery-type base ports
 - ✅ **Azure Authentication**: Device Code Flow and Entra ID App Registration methods
-- ✅ **RBAC Validation**: Subscription and resource group permissions
+- ✅ **RBAC Validation**: Subscription and resource group permissions, Azure Migrate roles, resource providers
 - ✅ **Migration Configuration**: Agentless (VMware, Hyper-V) and Agent-based (Physical servers)
 - ✅ **Physical Servers**: CSV-based connectivity validation
 - ✅ **Comprehensive Reporting**: HTML report with detailed findings and recommendations
+
+> **Note:** Post-discovery features (Software Inventory, SQL/Web App Discovery, Dependency Analysis) are configured in the appliance configuration manager after setup and validated by the appliance itself.
 
 ---
 
@@ -153,8 +155,7 @@ flowchart TD
     D -->|No| Z[❌ Exit]
     E --> F[Select Migration Approach]
     F --> G[Select Discovery Type]
-    G --> H[Optional: SQL/WebApp Discovery]
-    H --> I[🌐 Network Connectivity Tests]
+    G --> H[🌐 Network Connectivity Tests]
     I --> J[🔐 Azure Authentication]
     J --> K[✅ RBAC Validation]
     K --> L[📊 Generate HTML Report]
@@ -184,9 +185,7 @@ flowchart TD
     -MigrationApproach Agentless `
     -DiscoveryType VMware `
     -EndpointType Public `
-    -AuthMethod DeviceCodeFlow `
-    -IncludeSQLDiscovery $true `
-    -SQLPort 1433
+    -AuthMethod DeviceCodeFlow
 ```
 
 **📚 More Examples:** See **[EXAMPLES.md](EXAMPLES.md)** for 20+ ready-to-use commands
@@ -226,9 +225,7 @@ flowchart TD
 | `SubscriptionId` | String | No | Azure Subscription ID | Prompted |
 | `ResourceGroupName` | String | No | Azure Resource Group name | Prompted |
 | `PhysicalServersCSV` | String | No | Path to CSV file (hostname,ip) | Prompted |
-| `IncludeSQLDiscovery` | Boolean | No | Enable SQL Server discovery checks | `$false` |
-| `SQLPort` | Integer | No | SQL Server port | `1433` |
-| `IncludeWebAppDiscovery` | Boolean | No | Enable Web App discovery checks | `$false` |
+| `CloudType` | String | No | 'Public' or 'Government' | `Public` |
 | `LogPath` | String | No | Path for log file | Script directory |
 | `ReportPath` | String | No | Path for HTML report | Script directory |
 
@@ -252,8 +249,7 @@ flowchart TD
 ```powershell
 .\AzureMigrateApplianceReadinessCheck.ps1 `
     -MigrationApproach Agentless `
-    -DiscoveryType VMware `
-    -IncludeSQLDiscovery $true
+    -DiscoveryType VMware
 ```
 
 **Reference**: [VMware Support Matrix](https://learn.microsoft.com/azure/migrate/migrate-support-matrix-vmware)
@@ -393,7 +389,7 @@ Timestamped log file capturing all script actions, including:
 
 **💡 Tip:** For 20+ more examples including automation scripts, CI/CD integration, and advanced scenarios, see **[EXAMPLES.md](EXAMPLES.md)**
 
-### Scenario 1: VMware Agentless Migration with SQL Discovery
+### Scenario 1: VMware Agentless Migration
 
 ```powershell
 .\AzureMigrateApplianceReadinessCheck.ps1 `
@@ -401,8 +397,6 @@ Timestamped log file capturing all script actions, including:
     -DiscoveryType VMware `
     -EndpointType Public `
     -AuthMethod DeviceCodeFlow `
-    -IncludeSQLDiscovery $true `
-    -SQLPort 1433 `
     -SubscriptionId "12345678-1234-1234-1234-123456789012" `
     -ResourceGroupName "AzureMigrateRG"
 ```
@@ -426,12 +420,11 @@ Timestamped log file capturing all script actions, including:
 .\AzureMigrateApplianceReadinessCheck.ps1 `
     -MigrationApproach Agentless `
     -DiscoveryType HyperV `
-    -EndpointType Private `
-    -IncludeWebAppDiscovery $true
+    -EndpointType Private
 ```
 
 **📚 More Scenarios:** Check **[EXAMPLES.md](EXAMPLES.md)** for:
-- Custom SQL ports
+- Government cloud validation
 - Network share reports  
 - Scheduled validation tasks
 - Azure DevOps pipeline integration
@@ -531,13 +524,24 @@ For issues with:
 
 ## 📝 Version History
 
+### Version 2.0 (April 2, 2026)
+- Added Government cloud (Azure Gov) URL validation
+- Added FIPS mode, network adapter, and time sync checks
+- Added Resource Provider registration validation
+- Added Azure Migrate built-in role checks (Owner, Expert, Assessment/Migration roles)
+- Added discovery-type-aware appliance port checks
+- Removed post-discovery feature checks (Software Inventory, SQL/Web App Discovery, Dependency Analysis)
+  - These are configured in the appliance configuration manager after setup
+  - The appliance itself validates these during operation
+- Fixed PowerShell 5.1 parse compatibility (here-string, Unicode characters)
+- Updated HTML report metadata
+
 ### Version 1.0 (April 2, 2026)
 - Initial release
 - Support for Agentless (VMware, Hyper-V) and Agent-based (Physical) migrations
 - Device Code Flow and Entra ID App Registration authentication
 - Public and Private endpoint validation
 - Physical server CSV connectivity testing
-- SQL Server and Web App discovery port checks
 - Comprehensive HTML reporting
 - Color-coded console output
 - Detailed logging

@@ -24,11 +24,14 @@ The script will guide you through:
 1. **Accept Information Popup** - Read about Azure Migrate and click "Accept & Close"
 2. **Select Migration Approach** - Choose Agentless or Agent-Based
 3. **Select Discovery Type** - Choose VMware, Hyper-V, or Physical
-4. **Optional Components** - Decide on SQL and Web App discovery
+4. **Select Cloud Type** - Choose Public or Government
 5. **Network Testing** - Test connectivity to Azure endpoints
 6. **Authentication** - Sign in to Azure via browser (Device Code Flow)
-7. **Permissions Check** - Validate Contributor role access
+7. **Permissions Check** - Validate Contributor role and resource providers
 8. **Report Generation** - Create HTML report with all findings
+
+> **Note:** Post-discovery features (Software Inventory, SQL/Web App Discovery, Dependency Analysis)
+> are configured in the appliance configuration manager after setup.
 
 ---
 
@@ -71,15 +74,14 @@ Real-time color-coded progress:
 
 ## 🎯 Common Scenarios
 
-### Scenario 1: VMware Environment with SQL Servers
+### Scenario 1: VMware Environment
 ```powershell
 # Interactive mode - just press Enter for defaults
 .\AzureMigrateApplianceReadinessCheck.ps1
 # When prompted:
 # - Migration Approach: 1 (Agentless)
 # - Discovery Type: 1 (VMware)
-# - Include SQL Discovery: Y
-# - SQL Port: [Press Enter for 1433]
+# - Cloud Type: 1 (Public)
 ```
 
 ### Scenario 2: Physical Servers
@@ -104,7 +106,7 @@ Real-time color-coded progress:
 # When prompted:
 # - Migration Approach: 1 (Agentless)
 # - Discovery Type: 2 (HyperV)
-# - Include Web App Discovery: Y
+# - Cloud Type: 1 (Public)
 ```
 
 ---

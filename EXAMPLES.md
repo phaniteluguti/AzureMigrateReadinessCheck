@@ -30,26 +30,23 @@
     -ResourceGroupName "AzureMigrateRG"
 ```
 
-### VMware with SQL and Web App Discovery
+### VMware with Government Cloud
 ```powershell
 .\AzureMigrateApplianceReadinessCheck.ps1 `
     -InteractiveMode $false `
     -MigrationApproach Agentless `
     -DiscoveryType VMware `
-    -IncludeSQLDiscovery $true `
-    -SQLPort 1433 `
-    -IncludeWebAppDiscovery $true `
+    -CloudType Government `
     -AuthMethod DeviceCodeFlow
 ```
 
-### VMware with Custom SQL Port
+### VMware with Custom Paths
 ```powershell
 .\AzureMigrateApplianceReadinessCheck.ps1 `
     -MigrationApproach Agentless `
     -DiscoveryType VMware `
-    -IncludeSQLDiscovery $true `
-    -SQLPort 14330 `
-    -InteractiveMode $true
+    -LogPath "C:\AzureMigrate\Logs\Validation.log" `
+    -ReportPath "C:\AzureMigrate\Reports\ReadinessReport.html"
 ```
 
 ### Hyper-V Agentless Migration
@@ -95,14 +92,13 @@
     -AuthMethod DeviceCodeFlow
 ```
 
-### Hyper-V with Private Endpoints and SQL
+### Hyper-V with Private Endpoints
 ```powershell
 .\AzureMigrateApplianceReadinessCheck.ps1 `
     -InteractiveMode $false `
     -MigrationApproach Agentless `
     -DiscoveryType HyperV `
     -EndpointType Private `
-    -IncludeSQLDiscovery $true `
     -AuthMethod EntraIDApp
 ```
 
@@ -165,10 +161,8 @@
     -MigrationApproach Agentless `
     -DiscoveryType VMware `
     -EndpointType Public `
+    -CloudType Public `
     -AuthMethod DeviceCodeFlow `
-    -IncludeSQLDiscovery $true `
-    -SQLPort 1433 `
-    -IncludeWebAppDiscovery $true `
     -SubscriptionId "12345678-1234-1234-1234-123456789012" `
     -ResourceGroupName "AzureMigrateRG" `
     -LogPath "C:\Logs\AzureMigrate.log" `
@@ -281,7 +275,6 @@ $config = @{
     DiscoveryType = "VMware"
     SubscriptionId = (Get-AzContext).Subscription.Id
     ResourceGroupName = "AzureMigrate-Prod"
-    IncludeSQLDiscovery = $true
 }
 
 .\AzureMigrateApplianceReadinessCheck.ps1 @config
@@ -331,10 +324,13 @@ steps:
 | VMware vCenter | Agentless | VMware | None |
 | Hyper-V Hosts | Agentless | HyperV | None |
 | Physical Servers | AgentBased | Physical | PhysicalServersCSV |
-| VMware + SQL | Agentless | VMware | IncludeSQLDiscovery, SQLPort |
-| Any + WebApps | Any | Any | IncludeWebAppDiscovery |
+| Government Cloud | Any | Any | CloudType Government |
 | Private Link | Any | Any | EndpointType Private |
 | Service Principal | Any | Any | AuthMethod EntraIDApp |
+
+> **Note:** Software Inventory, SQL Discovery, Web App Discovery, and Dependency Analysis
+> are post-discovery features configured in the appliance configuration manager after setup.
+> They are validated by the appliance itself and are not part of this pre-setup script.
 
 ---
 

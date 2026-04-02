@@ -6,12 +6,17 @@
     Comprehensive PowerShell script to validate prerequisites, network connectivity, 
     authentication, and Azure RBAC permissions required for Azure Migrate appliance deployment.
     
+    Performs context-aware, conditional checks based on your migration approach, discovery type,
+    and selected optional features. Only validates what is relevant to your specific configuration.
+    
     Supports:
     - Agentless migration (VMware, Hyper-V)
     - Agent-based migration (Physical servers)
     - Device Code Flow and Entra ID App Registration authentication
-    - Public and Private Endpoints network validation
-    - Optional SQL Server and Web App discovery validation
+    - Public, Private, and Government cloud endpoint validation
+    
+    Note: Post-discovery features (Software Inventory, SQL/Web App Discovery, Dependency Analysis)
+    are configured in the appliance configuration manager after setup and validated by the appliance itself.
     
 .PARAMETER InteractiveMode
     Run the script in interactive mode with prompts (default: $true)
@@ -24,6 +29,9 @@
 
 .PARAMETER EndpointType
     Endpoint type: 'Public' or 'Private'
+
+.PARAMETER CloudType
+    Azure cloud environment: 'Public' or 'Government'. Determines which URL set to validate (default: 'Public')
 
 .PARAMETER AuthMethod
     Authentication method: 'DeviceCodeFlow' or 'EntraIDApp'
@@ -43,40 +51,23 @@
 .PARAMETER ReportPath
     Path for HTML report (default: script directory)
 
-.PARAMETER IncludeSQLDiscovery
-    Enable SQL Server discovery validation checks (default: $false)
-
-.PARAMETER SQLPort
-    SQL Server port for discovery connectivity checks (default: 1433)
-
-.PARAMETER IncludeWebAppDiscovery
-    Enable Web Application discovery validation - checks WinRM ports 5985/5986 and SSH port 22 (default: $false)
-
 .EXAMPLE
     .\AzureMigrateApplianceReadinessCheck.ps1
-    Run in fully interactive mode
+    Run in fully interactive mode - prompts for all configuration choices
 
 .EXAMPLE
     .\AzureMigrateApplianceReadinessCheck.ps1 -MigrationApproach Agentless -DiscoveryType VMware -EndpointType Public
-    Run with specific parameters
+    VMware agentless with public endpoints - runs core checks only
 
 .EXAMPLE
-    .\AzureMigrateApplianceReadinessCheck.ps1 -MigrationApproach Agentless -DiscoveryType VMware -IncludeSQLDiscovery $true -SQLPort 1433
-    VMware agentless migration with SQL Server discovery on default port
-
-.EXAMPLE
-    .\AzureMigrateApplianceReadinessCheck.ps1 -MigrationApproach AgentBased -DiscoveryType Physical -PhysicalServersCSV "C:\Servers.csv"
-    Physical servers agent-based migration with CSV connectivity testing
-
-.EXAMPLE
-    .\AzureMigrateApplianceReadinessCheck.ps1 -InteractiveMode $false -MigrationApproach Agentless -DiscoveryType VMware -AuthMethod EntraIDApp -SubscriptionId "12345678-1234-1234-1234-123456789012" -ResourceGroupName "AzureMigrateRG"
-    Fully automated non-interactive run with Entra ID App authentication
+    .\AzureMigrateApplianceReadinessCheck.ps1 -InteractiveMode $false -MigrationApproach Agentless -DiscoveryType VMware -AuthMethod EntraIDApp -SubscriptionId "12345678-1234-1234-1234-123456789012" -ResourceGroupName "AzureMigrateRG" -CloudType Government
+    Fully automated non-interactive run with Government cloud URLs and Entra ID App auth
 
 .NOTES
     File Name      : AzureMigrateApplianceReadinessCheck.ps1
     Author         : Azure Migration Team
     Prerequisite   : PowerShell 5.1 or later, Az PowerShell modules
-    Version        : 1.0
+    Version        : 2.0
     Date           : April 2, 2026
 #>
 
@@ -98,6 +89,10 @@ param(
     [string]$EndpointType = 'Public',
     
     [Parameter(Mandatory = $false)]
+    [ValidateSet('Public', 'Government')]
+    [string]$CloudType = 'Public',
+    
+    [Parameter(Mandatory = $false)]
     [ValidateSet('DeviceCodeFlow', 'EntraIDApp')]
     [string]$AuthMethod,
     
@@ -114,16 +109,7 @@ param(
     [string]$LogPath = (Join-Path $PSScriptRoot "AzureMigrateReadiness_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"),
     
     [Parameter(Mandatory = $false)]
-    [string]$ReportPath = (Join-Path $PSScriptRoot "AzureMigrateReadiness_$(Get-Date -Format 'yyyyMMdd_HHmmss').html"),
-    
-    [Parameter(Mandatory = $false)]
-    [bool]$IncludeSQLDiscovery = $false,
-    
-    [Parameter(Mandatory = $false)]
-    [int]$SQLPort = 1433,
-    
-    [Parameter(Mandatory = $false)]
-    [bool]$IncludeWebAppDiscovery = $false
+    [string]$ReportPath = (Join-Path $PSScriptRoot "AzureMigrateReadiness_$(Get-Date -Format 'yyyyMMdd_HHmmss').html")
 )
 
 #Requires -Version 5.1
@@ -132,7 +118,7 @@ param(
 # GLOBAL VARIABLES AND CONSTANTS
 # ============================================================================
 
-$script:ScriptVersion = "1.0"
+$script:ScriptVersion = "2.0"
 $script:CheckResults = @()
 $script:StartTime = Get-Date
 $script:ErrorCount = 0
@@ -157,6 +143,21 @@ $script:AzurePublicEndpoints = @{
         'https://www.live.com',
         'https://www.office.com'
     )
+    'AzureMigrateService' = @(
+        'https://discoverysrv.windowsazure.com',
+        'https://migration.windowsazure.com',
+        'https://hypervrecoverymanager.windowsazure.com'
+    )
+    'Identity' = @(
+        'https://login.microsoftonline-p.com',
+        'https://microsoftazuread-sso.com',
+        'https://cloud.microsoft'
+    )
+    'Telemetry' = @(
+        'https://dc.services.visualstudio.com',
+        'https://applicationinsights.azure.com',
+        'https://loganalytics.io'
+    )
     'Storage' = @(
         'https://www.blob.core.windows.net'
     )
@@ -168,9 +169,75 @@ $script:AzurePublicEndpoints = @{
     )
     'Updates' = @(
         'https://aka.ms/latestapplianceservices',
+        'https://download.microsoft.com/download',
+        'https://prod.do.dsp.mp.microsoft.com'
+    )
+    'TimeSync' = @(
+        'https://time.windows.com'
+    )
+}
+
+# Azure Government Cloud URLs
+$script:AzureGovernmentEndpoints = @{
+    'Essential' = @(
+        'https://portal.azure.us',
+        'https://management.usgovcloudapi.net',
+        'https://login.microsoftonline.us',
+        'https://graph.microsoft.us'
+    )
+    'AzureMigrate' = @(
+        'https://management.usgovcloudapi.net',
+        'https://login.microsoftonline.us',
+        'https://login.windows.net'
+    )
+    'AzureMigrateService' = @(
+        'https://discoverysrv.windowsazure.us',
+        'https://migration.windowsazure.us',
+        'https://hypervrecoverymanager.windowsazure.us'
+    )
+    'Storage' = @(
+        'https://www.blob.core.usgovcloudapi.net'
+    )
+    'ServiceBus' = @(
+        'https://www.servicebus.usgovcloudapi.net'
+    )
+    'KeyVault' = @(
+        'https://vault.usgovcloudapi.net'
+    )
+    'Updates' = @(
+        'https://aka.ms/latestapplianceservices',
         'https://download.microsoft.com/download'
     )
 }
+
+# Required Azure Resource Providers for Azure Migrate
+$script:RequiredResourceProviders = @(
+    'Microsoft.OffAzure',
+    'Microsoft.Migrate',
+    'Microsoft.KeyVault',
+    'Microsoft.Storage',
+    'Microsoft.Network',
+    'Microsoft.Compute',
+    'Microsoft.Insights',
+    'Microsoft.HybridCompute',
+    'Microsoft.GuestConfiguration',
+    'Microsoft.HybridConnectivity',
+    'Microsoft.RecoveryServices',
+    'Microsoft.DataReplication',
+    'Microsoft.ApplicationMigration',
+    'Microsoft.DependencyMap',
+    'Microsoft.MySQLDiscovery',
+    'Microsoft.AzureArcData'
+)
+
+# Azure Migrate specific RBAC role names
+$script:AzureMigrateRoles = @(
+    'Contributor',
+    'Owner',
+    'Azure Migrate Owner',
+    'Azure Migrate Decide and Plan Expert',
+    'Azure Migrate Execute Expert'
+)
 
 # ============================================================================
 # LOGGING FUNCTIONS
@@ -434,7 +501,10 @@ function Test-Prerequisites {
     # Check OS version
     Test-OSVersion
     
-    # Check hardware requirements
+    # Check FIPS mode (not supported for appliance)
+    Test-FIPSMode
+    
+    # Check hardware requirements (conditional on DiscoveryType)
     Test-HardwareRequirements
     
     # Check for required modules
@@ -442,6 +512,12 @@ function Test-Prerequisites {
     
     # Check for existing Azure Migrate installation
     Test-ExistingApplianceInstallation
+    
+    # Check network adapter / IP address
+    Test-NetworkAdapter
+    
+    # Check time sync service
+    Test-TimeSyncService
 }
 
 function Test-PowerShellVersion {
@@ -534,7 +610,7 @@ function Test-OSVersion {
 function Test-HardwareRequirements {
     <#
     .SYNOPSIS
-        Validates hardware requirements
+        Validates hardware requirements (conditional on DiscoveryType and optional features)
     #>
     Write-Progress-Status -Activity "Prerequisite Checks" -Status "Checking hardware requirements..."
     
@@ -549,18 +625,27 @@ function Test-HardwareRequirements {
     
     Write-Log -Message "System Resources - RAM: ${totalRAM}GB, CPU Cores: $cpuCores, Free Disk: ${freeDiskGB}GB" -Level Info
     
-    # Minimum requirements: 32GB RAM, 8 vCPUs, 80GB disk
-    $ramCheck = $totalRAM -ge 32
+    # Determine required RAM based on DiscoveryType
+    # Hyper-V standalone appliance: 16GB minimum (32GB if optional features are enabled post-setup)
+    # VMware and Physical: always 32GB
+    $requiredRAM = 32
+    $ramNote = ""
+    if ($script:DiscoveryType -eq 'HyperV') {
+        $requiredRAM = 16
+        $ramNote = " (Hyper-V base requirement; 32GB recommended if enabling Software Inventory/SQL/Web App discovery later)"
+    }
+    
+    $ramCheck = $totalRAM -ge $requiredRAM
     $cpuCheck = $cpuCores -ge 8
     $diskCheck = $freeDiskGB -ge 80
     
     if ($ramCheck -and $cpuCheck -and $diskCheck) {
         Add-CheckResult -Category "Prerequisites" -CheckName "Hardware Requirements" -Status "Pass" `
-            -Details "System meets requirements - RAM: ${totalRAM}GB (32GB+ req), CPUs: $cpuCores (8+ req), Free Disk: ${freeDiskGB}GB (80GB+ req)"
+            -Details "System meets requirements$ramNote - RAM: ${totalRAM}GB (${requiredRAM}GB+ req), CPUs: $cpuCores (8+ req), Free Disk: ${freeDiskGB}GB (80GB+ req)"
     }
     else {
         $issues = @()
-        if (-not $ramCheck) { $issues += "RAM: ${totalRAM}GB (32GB required)" }
+        if (-not $ramCheck) { $issues += "RAM: ${totalRAM}GB (${requiredRAM}GB required$ramNote)" }
         if (-not $cpuCheck) { $issues += "CPUs: $cpuCores (8 required)" }
         if (-not $diskCheck) { $issues += "Free Disk: ${freeDiskGB}GB (80GB required)" }
         
@@ -632,6 +717,92 @@ function Test-ExistingApplianceInstallation {
     }
 }
 
+function Test-FIPSMode {
+    <#
+    .SYNOPSIS
+        Checks if FIPS mode is enabled (not supported for Azure Migrate appliance)
+    #>
+    Write-Progress-Status -Activity "Prerequisite Checks" -Status "Checking FIPS mode..."
+    
+    try {
+        $fipsKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\FipsAlgorithmPolicy"
+        if (Test-Path $fipsKey) {
+            $fipsEnabled = (Get-ItemProperty -Path $fipsKey -Name Enabled -ErrorAction SilentlyContinue).Enabled
+            if ($fipsEnabled -eq 1) {
+                Add-CheckResult -Category "Prerequisites" -CheckName "FIPS Mode" -Status "Fail" `
+                    -Details "FIPS mode is ENABLED. Azure Migrate appliance does not support FIPS mode." `
+                    -Recommendation "Disable FIPS mode before deploying the appliance. Registry: HKLM\SYSTEM\CurrentControlSet\Control\Lsa\FipsAlgorithmPolicy\Enabled = 0"
+            }
+            else {
+                Add-CheckResult -Category "Prerequisites" -CheckName "FIPS Mode" -Status "Pass" `
+                    -Details "FIPS mode is disabled (compatible with Azure Migrate appliance)"
+            }
+        }
+        else {
+            Add-CheckResult -Category "Prerequisites" -CheckName "FIPS Mode" -Status "Pass" `
+                -Details "FIPS policy registry key not found (FIPS not configured)"
+        }
+    }
+    catch {
+        Add-CheckResult -Category "Prerequisites" -CheckName "FIPS Mode" -Status "Warning" `
+            -Details "Unable to check FIPS mode: $($_.Exception.Message)"
+    }
+}
+
+function Test-NetworkAdapter {
+    <#
+    .SYNOPSIS
+        Validates the appliance has a routable IP address
+    #>
+    Write-Progress-Status -Activity "Prerequisite Checks" -Status "Checking network adapter..."
+    
+    try {
+        $adapters = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop | Where-Object {
+            $_.IPAddress -ne '127.0.0.1' -and $_.PrefixOrigin -ne 'WellKnown'
+        }
+        
+        if ($adapters -and $adapters.Count -gt 0) {
+            $ipList = ($adapters | Select-Object -ExpandProperty IPAddress) -join ', '
+            Add-CheckResult -Category "Prerequisites" -CheckName "Network Adapter" -Status "Pass" `
+                -Details "Active network adapter(s) found with IP: $ipList"
+        }
+        else {
+            Add-CheckResult -Category "Prerequisites" -CheckName "Network Adapter" -Status "Fail" `
+                -Details "No active network adapter with a routable IPv4 address found" `
+                -Recommendation "The appliance requires a static or dynamic IP with internet access"
+        }
+    }
+    catch {
+        Add-CheckResult -Category "Prerequisites" -CheckName "Network Adapter" -Status "Warning" `
+            -Details "Unable to check network adapters: $($_.Exception.Message)"
+    }
+}
+
+function Test-TimeSyncService {
+    <#
+    .SYNOPSIS
+        Checks if Windows Time service is running (critical for auth token validity)
+    #>
+    Write-Progress-Status -Activity "Prerequisite Checks" -Status "Checking time sync service..."
+    
+    try {
+        $w32time = Get-Service -Name 'w32time' -ErrorAction Stop
+        if ($w32time.Status -eq 'Running') {
+            Add-CheckResult -Category "Prerequisites" -CheckName "Time Sync Service" -Status "Pass" `
+                -Details "Windows Time service (w32time) is running"
+        }
+        else {
+            Add-CheckResult -Category "Prerequisites" -CheckName "Time Sync Service" -Status "Warning" `
+                -Details "Windows Time service is $($w32time.Status). Time sync is critical for Azure authentication." `
+                -Recommendation "Start the service: Start-Service w32time; w32tm /resync"
+        }
+    }
+    catch {
+        Add-CheckResult -Category "Prerequisites" -CheckName "Time Sync Service" -Status "Warning" `
+            -Details "Unable to check Windows Time service: $($_.Exception.Message)"
+    }
+}
+
 # ============================================================================
 # MIGRATION APPROACH AND DISCOVERY SELECTION
 # ============================================================================
@@ -650,10 +821,11 @@ function Get-MigrationConfiguration {
     
     # Show information about Azure Migrate
     $infoMessage = @"
-Azure Migrate Appliance Readiness Check
+Azure Migrate Appliance Readiness Check v$($script:ScriptVersion)
 ========================================
 
 This script validates the prerequisites required for Azure Migrate appliance deployment.
+It performs CONTEXT-AWARE checks - only validating what is relevant to your configuration.
 
 Two Migration Approaches:
 -------------------------
@@ -661,20 +833,22 @@ Two Migration Approaches:
    - For VMware and Hyper-V environments
    - Discovery: Collect server metadata, performance data, dependencies
    - Replication: Agentless replication to Azure without installing agents
-   - Both Discovery AND Replication checks will be performed
 
 2. AGENT-BASED Migration
    - For Physical servers or unsupported virtualization platforms
    - Discovery: Collect server metadata, performance data
    - Replication: Requires agents on each server (not covered in this script)
-   - Only Discovery checks will be performed
 
-Optional Components:
--------------------
-- SQL Server Discovery (default port 1433 or custom)
-- Web Application Discovery (Windows WinRM 5985/5986, Linux SSH 22)
+Optional Features (configured post-setup in appliance):
+-------------------------------------------------------
+After the appliance is deployed, you configure these in the appliance configuration manager:
+- Software Inventory, SQL Server Discovery, Web App Discovery, Dependency Analysis
+These are validated by the appliance itself during operation.
 
-For more information:
+This script focuses on PRE-SETUP prerequisites only:
+- Hardware, OS, network connectivity, Azure RBAC, resource providers, FIPS mode, time sync
+
+Documentation:
 - VMware: https://learn.microsoft.com/azure/migrate/migrate-support-matrix-vmware
 - Hyper-V: https://learn.microsoft.com/azure/migrate/migrate-support-matrix-hyper-v
 - Physical: https://learn.microsoft.com/azure/migrate/migrate-support-matrix-physical
@@ -744,50 +918,16 @@ For more information:
     Add-CheckResult -Category "Configuration" -CheckName "Migration Configuration" -Status "Pass" `
         -Details "Approach: $($script:MigrationApproach), Type: $($script:DiscoveryType)"
     
-    # Get optional discovery components
-    Get-OptionalDiscoveryComponents
+    # Get Cloud Type
+    if ($InteractiveMode -and -not $PSBoundParameters.ContainsKey('CloudType')) {
+        $script:CloudType = Show-SelectionMenu -Title "Select Azure Cloud Environment" `
+            -Options @('Public', 'Government') -DefaultOption 'Public'
+    }
+    Write-Log -Message "Selected Cloud Type: $($script:CloudType)" -Level Info
     
     # If Physical servers, get CSV file
     if ($script:DiscoveryType -eq 'Physical') {
         Get-PhysicalServersConfig
-    }
-}
-
-function Get-OptionalDiscoveryComponents {
-    <#
-    .SYNOPSIS
-        Configures optional discovery components (SQL, WebApp)
-    #>
-    Write-Host "`n--- Optional Discovery Components ---`n" -ForegroundColor Yellow
-    
-    # SQL Server Discovery
-    if ($InteractiveMode -and -not $PSBoundParameters.ContainsKey('IncludeSQLDiscovery')) {
-        $sqlChoice = Read-Host "Include SQL Server discovery? (Y/N) [N]"
-        $script:IncludeSQLDiscovery = ($sqlChoice -eq 'Y' -or $sqlChoice -eq 'y')
-    }
-    
-    if ($script:IncludeSQLDiscovery) {
-        if ($InteractiveMode -and $script:SQLPort -eq 1433) {
-            $portInput = Read-Host "SQL Server port [1433]"
-            if (-not [string]::IsNullOrWhiteSpace($portInput)) {
-                $script:SQLPort = [int]$portInput
-            }
-        }
-        Write-Log -Message "SQL Server discovery enabled (Port: $($script:SQLPort))" -Level Info
-        Add-CheckResult -Category "Configuration" -CheckName "SQL Discovery" -Status "Info" `
-            -Details "SQL Server discovery enabled on port $($script:SQLPort)"
-    }
-    
-    # Web App Discovery
-    if ($InteractiveMode -and -not $PSBoundParameters.ContainsKey('IncludeWebAppDiscovery')) {
-        $webChoice = Read-Host "Include Web Application discovery? (Y/N) [N]"
-        $script:IncludeWebAppDiscovery = ($webChoice -eq 'Y' -or $webChoice -eq 'y')
-    }
-    
-    if ($script:IncludeWebAppDiscovery) {
-        Write-Log -Message "Web Application discovery enabled (Windows WinRM 5985/5986, Linux SSH 22)" -Level Info
-        Add-CheckResult -Category "Configuration" -CheckName "Web App Discovery" -Status "Info" `
-            -Details "Web App discovery enabled - Requires WinRM ports 5985/5986 (Windows) and SSH port 22 (Linux)"
     }
 }
 
@@ -952,14 +1092,8 @@ function Test-NetworkConnectivity {
         Test-PrivateEndpoints
     }
     
-    # Test specific ports for discovery components
-    if ($script:IncludeSQLDiscovery) {
-        Test-SQLPort
-    }
-    
-    if ($script:IncludeWebAppDiscovery) {
-        Test-WebAppPorts
-    }
+    # Appliance port requirements per discovery type
+    Test-DiscoveryTypePorts
 }
 
 function Test-PublicEndpoints {
@@ -988,11 +1122,11 @@ function Test-PublicEndpoints {
             $result = Test-URLConnectivity -URL $url
             
             if ($result.Success) {
-                Write-Log -Message "✓ $url - Accessible (Response: $($result.StatusCode), Time: $($result.ResponseTime)ms)" -Level Success
+                Write-Log -Message "[PASS] $url - Accessible (Response: $($result.StatusCode), Time: $($result.ResponseTime)ms)" -Level Success
                 $passedChecks++
             }
             else {
-                Write-Log -Message "✗ $url - Not accessible (Error: $($result.ErrorMessage))" -Level Error
+                Write-Log -Message "[FAIL] $url - Not accessible (Error: $($result.ErrorMessage))" -Level Error
                 $failedChecks++
             }
         }
@@ -1023,21 +1157,21 @@ function Test-PrivateEndpoints {
     #>
     Write-Log -Message "Testing connectivity for Private Endpoints configuration..." -Level Info
     
-    $privateEndpointInfo = @"
-For Private Endpoint connectivity, ensure the following are configured:
-1. Private Link connection to Azure Migrate service
-2. Private DNS zones for Azure services
-3. Network routing to private endpoints
-
-Essential public URLs still required (for authentication):
-- portal.azure.com
-- login.microsoftonline.com
-- *.msftauth.net
-- *.msauth.net
-
-For detailed Private Link setup:
-https://learn.microsoft.com/azure/migrate/how-to-use-azure-migrate-with-private-endpoints
-"@
+    $privateEndpointInfo = @(
+        "For Private Endpoint connectivity, ensure the following are configured:",
+        "1. Private Link connection to Azure Migrate service",
+        "2. Private DNS zones for Azure services",
+        "3. Network routing to private endpoints",
+        "",
+        "Essential public URLs still required (for authentication):",
+        "  - portal.azure.com",
+        "  - login.microsoftonline.com",
+        "  - *.msftauth.net",
+        "  - *.msauth.net",
+        "",
+        "For detailed Private Link setup:",
+        "https://learn.microsoft.com/azure/migrate/how-to-use-azure-migrate-with-private-endpoints"
+    ) -join "`n"
     
     Write-Host $privateEndpointInfo -ForegroundColor Yellow
     
@@ -1051,11 +1185,11 @@ https://learn.microsoft.com/azure/migrate/how-to-use-azure-migrate-with-private-
     foreach ($url in $essentialURLs) {
         $result = Test-URLConnectivity -URL $url
         if ($result.Success) {
-            Write-Log -Message "✓ $url - Accessible" -Level Success
+            Write-Log -Message "[PASS] $url - Accessible" -Level Success
             $accessibleCount++
         }
         else {
-            Write-Log -Message "✗ $url - Not accessible" -Level Error
+            Write-Log -Message "[FAIL] $url - Not accessible" -Level Error
         }
     }
     
@@ -1078,23 +1212,25 @@ https://learn.microsoft.com/azure/migrate/how-to-use-azure-migrate-with-private-
 function Get-AzureEndpointURLs {
     <#
     .SYNOPSIS
-        Gets Azure endpoint URLs (tries dynamic fetch, falls back to hardcoded)
+        Gets Azure endpoint URLs based on CloudType (Public or Government)
     #>
     try {
-        # Try to fetch from Microsoft Learn (if internet accessible)
         $learnUrl = "https://learn.microsoft.com/en-us/azure/migrate/migrate-appliance"
-        $response = Invoke-WebRequest -Uri $learnUrl -TimeoutSec 5 -ErrorAction Stop
+        $null = Invoke-WebRequest -Uri $learnUrl -TimeoutSec 5 -ErrorAction Stop
         Write-Log -Message "Successfully fetched latest endpoint information from Microsoft Learn" -Level Info
-        
-        # For now, return hardcoded list (parsing HTML would be complex)
-        # In production, this could parse the documentation page
     }
     catch {
         Write-Log -Message "Could not fetch from Microsoft Learn, using hardcoded URL list" -Level Warning
     }
     
-    # Return hardcoded list (fallback or default)
-    return $script:AzurePublicEndpoints
+    # Return cloud-specific URL list
+    if ($script:CloudType -eq 'Government') {
+        Write-Log -Message "Using Azure Government cloud URL set" -Level Info
+        return $script:AzureGovernmentEndpoints
+    }
+    else {
+        return $script:AzurePublicEndpoints
+    }
 }
 
 function Test-URLConnectivity {
@@ -1145,38 +1281,47 @@ function Test-URLConnectivity {
     return $result
 }
 
-function Test-SQLPort {
+# ============================================================================
+# APPLIANCE PORT REQUIREMENT CHECKS
+# ============================================================================
+
+function Test-DiscoveryTypePorts {
     <#
     .SYNOPSIS
-        Tests SQL Server port connectivity requirements
+        Validates base port requirements per discovery type (always runs when discovery type is set)
     #>
-    Write-Host "`n--- Testing SQL Server Discovery Ports ---`n" -ForegroundColor Yellow
+    Write-Host "`n--- Base Discovery Port Requirements ---`n" -ForegroundColor Yellow
     
-    Add-CheckResult -Category "Network" -CheckName "SQL Discovery Port" -Status "Info" `
-        -Details "SQL Server discovery requires port $($script:SQLPort) to be accessible on target servers" `
-        -Recommendation "Ensure firewall rules allow inbound connections on port $($script:SQLPort) from the appliance"
-}
-
-function Test-WebAppPorts {
-    <#
-    .SYNOPSIS
-        Tests Web App discovery port requirements
-    #>
-    Write-Host "`n--- Testing Web App Discovery Ports ---`n" -ForegroundColor Yellow
-    
-    $portsInfo = @"
-Web App Discovery Port Requirements:
-- Windows Servers: WinRM ports 5985 (HTTP) and 5986 (HTTPS)
-- Linux Servers: SSH port 22
-
-Ensure these ports are accessible from the appliance to target servers.
-"@
-    
-    Write-Host $portsInfo -ForegroundColor Cyan
-    
-    Add-CheckResult -Category "Network" -CheckName "Web App Discovery Ports" -Status "Info" `
-        -Details "Web App discovery requires WinRM (5985/5986) for Windows and SSH (22) for Linux" `
-        -Recommendation "Ensure firewall rules allow these ports from the appliance to target servers"
+    switch ($script:DiscoveryType) {
+        'VMware' {
+            Add-CheckResult -Category "Network" -CheckName "VMware Base Ports" -Status "Info" `
+                -Details "VMware discovery requires: TCP 443 outbound to Azure, TCP 443 to vCenter Server, Inbound 3389 (RDP) and 44368 (appliance portal)" `
+                -Recommendation "Ensure vCenter Server is accessible on port 443 from the appliance. IPv6 is not supported for vCenter/ESXi."
+        }
+        'HyperV' {
+            # Check WinRM service on the appliance itself
+            try {
+                $winrmService = Get-Service -Name 'WinRM' -ErrorAction Stop
+                $winrmStatus = if ($winrmService.Status -eq 'Running') { "Pass" } else { "Warning" }
+                Add-CheckResult -Category "Network" -CheckName "WinRM Service (Appliance)" -Status $winrmStatus `
+                    -Details "WinRM service is $($winrmService.Status) on this appliance" `
+                    -Recommendation $(if ($winrmStatus -eq 'Warning') { "Start WinRM: Enable-PSRemoting -Force" } else { "" })
+            }
+            catch {
+                Add-CheckResult -Category "Network" -CheckName "WinRM Service (Appliance)" -Status "Warning" `
+                    -Details "Cannot check WinRM service: $($_.Exception.Message)"
+            }
+            
+            Add-CheckResult -Category "Network" -CheckName "Hyper-V Base Ports" -Status "Info" `
+                -Details "Hyper-V discovery requires: WinRM 5985 (HTTP) / 5986 (HTTPS) to Hyper-V hosts, TCP 443 outbound, Inbound 3389 + 44368" `
+                -Recommendation "Ensure PowerShell remoting is enabled on each Hyper-V host. Supported hosts: Windows Server 2012 R2, 2016, 2019, 2022."
+        }
+        'Physical' {
+            Add-CheckResult -Category "Network" -CheckName "Physical Base Ports" -Status "Info" `
+                -Details "Physical discovery requires: WinRM 5985/5986 (Windows) or SSH 22 (Linux) to target servers, TCP 443 outbound, Inbound 3389 + 44368" `
+                -Recommendation "Windows: WinRM HTTPS requires a local Server Auth certificate with CN matching hostname. Linux: SSH must be enabled."
+        }
+    }
 }
 
 # ============================================================================
@@ -1479,8 +1624,11 @@ function Test-AzureRBAC {
     # Get resource group
     Get-AzureResourceGroup
     
-    # Validate Contributor role
+    # Validate role assignments (Contributor/Owner/Azure Migrate roles)
     Test-ContributorRole
+    
+    # Validate Resource Provider registrations
+    Test-ResourceProviders
 }
 
 function Get-AzureSubscription {
@@ -1617,13 +1765,13 @@ function Get-AzureResourceGroup {
 function Test-ContributorRole {
     <#
     .SYNOPSIS
-        Tests for Contributor role assignment
+        Tests for Contributor, Owner, or Azure Migrate specific role assignments
     #>
-    Write-Log -Message "Checking for Contributor role assignment..." -Level Info
+    Write-Log -Message "Checking for required role assignments..." -Level Info
     
     if ([string]::IsNullOrWhiteSpace($script:SubscriptionId)) {
-        Add-CheckResult -Category "RBAC" -CheckName "Contributor Role" -Status "Warning" `
-            -Details "Cannot validate Contributor role - no subscription selected"
+        Add-CheckResult -Category "RBAC" -CheckName "Role Assignment" -Status "Warning" `
+            -Details "Cannot validate roles - no subscription selected"
         return
     }
     
@@ -1634,46 +1782,107 @@ function Test-ContributorRole {
         $subScope = "/subscriptions/$($script:SubscriptionId)"
         $subRoles = Get-AzRoleAssignment -Scope $subScope -SignInName $currentUser -ErrorAction SilentlyContinue
         
-        $hasSubContributor = $subRoles | Where-Object { $_.RoleDefinitionName -in @('Contributor', 'Owner') }
+        # Check for traditional roles AND new Azure Migrate built-in roles
+        $hasRequiredRole = $subRoles | Where-Object { $_.RoleDefinitionName -in $script:AzureMigrateRoles }
         
         # Check at resource group level if specified
-        $hasRGContributor = $false
+        $hasRGRole = $false
         if (-not [string]::IsNullOrWhiteSpace($script:ResourceGroupName)) {
             $rgScope = "/subscriptions/$($script:SubscriptionId)/resourceGroups/$($script:ResourceGroupName)"
             $rgRoles = Get-AzRoleAssignment -Scope $rgScope -SignInName $currentUser -ErrorAction SilentlyContinue
-            $hasRGContributor = $rgRoles | Where-Object { $_.RoleDefinitionName -in @('Contributor', 'Owner') }
+            $hasRGRole = $rgRoles | Where-Object { $_.RoleDefinitionName -in $script:AzureMigrateRoles }
         }
         
-        if ($hasSubContributor) {
-            Write-Log -Message "User has Contributor/Owner role at subscription level" -Level Success
-            Add-CheckResult -Category "RBAC" -CheckName "Contributor Role" -Status "Pass" `
-                -Details "User '$currentUser' has $(($hasSubContributor | Select-Object -First 1).RoleDefinitionName) role at subscription level"
+        if ($hasRequiredRole) {
+            $roleNames = ($hasRequiredRole | Select-Object -ExpandProperty RoleDefinitionName -Unique) -join ', '
+            Write-Log -Message "User has required role(s) at subscription level: $roleNames" -Level Success
+            Add-CheckResult -Category "RBAC" -CheckName "Role Assignment" -Status "Pass" `
+                -Details "User '$currentUser' has role(s): $roleNames at subscription level"
         }
-        elseif ($hasRGContributor) {
-            Write-Log -Message "User has Contributor/Owner role at resource group level" -Level Success
-            Add-CheckResult -Category "RBAC" -CheckName "Contributor Role" -Status "Pass" `
-                -Details "User '$currentUser' has $(($hasRGContributor | Select-Object -First 1).RoleDefinitionName) role on resource group '$($script:ResourceGroupName)'"
+        elseif ($hasRGRole) {
+            $roleNames = ($hasRGRole | Select-Object -ExpandProperty RoleDefinitionName -Unique) -join ', '
+            Write-Log -Message "User has required role(s) at resource group level: $roleNames" -Level Success
+            Add-CheckResult -Category "RBAC" -CheckName "Role Assignment" -Status "Pass" `
+                -Details "User '$currentUser' has role(s): $roleNames on resource group '$($script:ResourceGroupName)'"
         }
         else {
-            Write-Log -Message "User does not have Contributor role at subscription or resource group level" -Level Error
-            Add-CheckResult -Category "RBAC" -CheckName "Contributor Role" -Status "Fail" `
-                -Details "User '$currentUser' does not have Contributor or Owner role" `
+            Write-Log -Message "User does not have any required role" -Level Error
+            Add-CheckResult -Category "RBAC" -CheckName "Role Assignment" -Status "Fail" `
+                -Details "User '$currentUser' does not have any of the required roles: $($script:AzureMigrateRoles -join ', ')" `
                 -Recommendation @"
-Grant Contributor role to the user:
-1. Subscription level (recommended): 
-   New-AzRoleAssignment -SignInName '$currentUser' -RoleDefinitionName 'Contributor' -Scope '/subscriptions/$($script:SubscriptionId)'
+Grant one of the following roles:
+- Traditional: Contributor or Owner (broad access)
+- Azure Migrate Owner (full Azure Migrate access)
+- Azure Migrate Decide and Plan Expert (discovery + assessment)
+- Azure Migrate Execute Expert (migration execution)
 
-2. Resource Group level:
-   New-AzRoleAssignment -SignInName '$currentUser' -RoleDefinitionName 'Contributor' -ResourceGroupName '$($script:ResourceGroupName)'
+Subscription level: New-AzRoleAssignment -SignInName '$currentUser' -RoleDefinitionName 'Contributor' -Scope '/subscriptions/$($script:SubscriptionId)'
+Resource Group level: New-AzRoleAssignment -SignInName '$currentUser' -RoleDefinitionName 'Contributor' -ResourceGroupName '$($script:ResourceGroupName)'
 
-For more info: https://learn.microsoft.com/azure/migrate/prepare-azure-accounts
+For appliance registration, the user also needs Application Developer role at Entra ID tenant level.
+Docs: https://learn.microsoft.com/azure/migrate/prepare-azure-accounts
 "@
         }
     }
     catch {
-        Add-CheckResult -Category "RBAC" -CheckName "Contributor Role" -Status "Fail" `
+        Add-CheckResult -Category "RBAC" -CheckName "Role Assignment" -Status "Fail" `
             -Details "Failed to check role assignments: $($_.Exception.Message)" `
             -Recommendation "Verify permissions to query role assignments"
+    }
+}
+
+function Test-ResourceProviders {
+    <#
+    .SYNOPSIS
+        Checks if required Azure Resource Providers are registered in the subscription
+    #>
+    Write-Host "`n--- Resource Provider Registration ---`n" -ForegroundColor Yellow
+    Write-Log -Message "Checking required Resource Provider registrations..." -Level Info
+    
+    if (-not $script:AzureContext) {
+        Add-CheckResult -Category "RBAC" -CheckName "Resource Providers" -Status "Warning" `
+            -Details "Cannot check Resource Providers - no authenticated session" `
+            -Recommendation "Complete authentication to validate Resource Provider registration"
+        return
+    }
+    
+    try {
+        $registeredCount = 0
+        $unregisteredProviders = @()
+        
+        foreach ($provider in $script:RequiredResourceProviders) {
+            Write-Progress-Status -Activity "Resource Providers" -Status "Checking $provider..."
+            
+            $rp = Get-AzResourceProvider -ProviderNamespace $provider -ErrorAction SilentlyContinue
+            if ($rp -and $rp.RegistrationState -eq 'Registered') {
+                $registeredCount++
+            }
+            else {
+                $unregisteredProviders += $provider
+            }
+        }
+        
+        Write-Progress -Activity "Resource Providers" -Completed
+        
+        if ($unregisteredProviders.Count -eq 0) {
+            Add-CheckResult -Category "RBAC" -CheckName "Resource Providers" -Status "Pass" `
+                -Details "All $($script:RequiredResourceProviders.Count) required Resource Providers are registered"
+        }
+        elseif ($registeredCount -gt 0) {
+            Add-CheckResult -Category "RBAC" -CheckName "Resource Providers" -Status "Warning" `
+                -Details "$registeredCount/$($script:RequiredResourceProviders.Count) registered. Unregistered: $($unregisteredProviders -join ', ')" `
+                -Recommendation "Register missing providers: $($unregisteredProviders | ForEach-Object { "Register-AzResourceProvider -ProviderNamespace '$_'" } | Out-String)"
+        }
+        else {
+            Add-CheckResult -Category "RBAC" -CheckName "Resource Providers" -Status "Fail" `
+                -Details "None of the $($script:RequiredResourceProviders.Count) required Resource Providers are registered" `
+                -Recommendation "Register all providers. Quick command: @('$($script:RequiredResourceProviders -join "','")') | ForEach-Object { Register-AzResourceProvider -ProviderNamespace `$_ }"
+        }
+    }
+    catch {
+        Add-CheckResult -Category "RBAC" -CheckName "Resource Providers" -Status "Warning" `
+            -Details "Failed to check Resource Providers: $($_.Exception.Message)" `
+            -Recommendation "Manually verify providers are registered: Get-AzResourceProvider -ListAvailable | Where RegistrationState -eq 'Registered'"
     }
 }
 
@@ -1744,6 +1953,7 @@ function GenerateHTMLReport {
             <p><strong>Duration:</strong> $($duration.ToString('hh\:mm\:ss'))</p>
             <p><strong>Migration Approach:</strong> $($script:MigrationApproach)</p>
             <p><strong>Discovery Type:</strong> $($script:DiscoveryType)</p>
+            <p><strong>Cloud Type:</strong> $($script:CloudType)</p>
             <p><strong>Endpoint Type:</strong> $($script:EndpointType)</p>
         </div>
         
@@ -1908,7 +2118,7 @@ function Main {
             exit 0
         }
         else {
-            Write-Host "✓ All checks passed successfully!" -ForegroundColor Green
+            Write-Host "[PASS] All checks passed successfully!" -ForegroundColor Green
             exit 0
         }
     }
