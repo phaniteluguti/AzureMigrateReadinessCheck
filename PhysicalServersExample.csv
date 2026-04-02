@@ -1,0 +1,7 @@
+hostname,ip
+server01,192.168.1.10
+server02,192.168.1.11
+webserver01,192.168.1.20
+dbserver01,192.168.1.30
+appserver01,10.20.30.40
+fileserver,10.20.30.50
