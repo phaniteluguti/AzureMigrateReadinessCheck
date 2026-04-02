@@ -1783,7 +1783,7 @@ function Test-DiscoveryTypePorts {
 function Test-AzureAuthentication {
     <#
     .SYNOPSIS
-        Tests Azure authentication methods
+        Tests Azure authentication methods with fallback to interactive browser auth
     #>
     [CmdletBinding()]
     param()
@@ -1822,18 +1822,120 @@ Two Authentication Methods Available:
     
     Write-Log -Message "Selected authentication method: $($script:AuthMethod)" -Level Info
     
+    $authSuccess = $false
+    
     if ($script:AuthMethod -eq 'DeviceCodeFlow') {
-        $null = Test-DeviceCodeFlow
+        $authSuccess = Test-DeviceCodeFlow
+        
+        # If DCF failed and we're in interactive mode, offer alternatives
+        if (-not $authSuccess -and $InteractiveMode) {
+            Write-Host "`n========================================" -ForegroundColor Yellow
+            Write-Host "DEVICE CODE FLOW AUTHENTICATION FAILED" -ForegroundColor Yellow
+            Write-Host "========================================" -ForegroundColor Yellow
+            Write-Host @"
+
+Device Code Flow did not succeed. This can happen when:
+  - Conditional Access requires a managed/compliant device
+  - The device code expired before authentication completed
+  - Azure AD policy blocks Device Code Flow
+
+You can:
+  1. Try interactive browser authentication (Connect-AzAccount)
+     This opens a browser popup for standard Azure sign-in.
+  2. Skip authentication and continue
+     A minimum report will be generated without RBAC checks.
+  3. Stop the script
+
+"@ -ForegroundColor Yellow
+            
+            $fallbackChoice = Show-SelectionMenu -Title "How would you like to proceed?" `
+                -Options @('TryInteractiveBrowserAuth', 'SkipAndContinue', 'StopScript') `
+                -DefaultOption 'TryInteractiveBrowserAuth'
+            
+            Write-Log -Message "User selected fallback option: $fallbackChoice" -Level Info
+            
+            switch ($fallbackChoice) {
+                'TryInteractiveBrowserAuth' {
+                    $authSuccess = Invoke-InteractiveBrowserAuth
+                }
+                'SkipAndContinue' {
+                    Write-Host "`nSkipping authentication. RBAC checks will also be skipped." -ForegroundColor Yellow
+                    Write-Log -Message "User chose to skip authentication after DCF failure" -Level Warning
+                    
+                    Add-CheckResult -Category "Authentication" -CheckName "Authentication Skipped" -Status "Warning" `
+                        -Details "User skipped authentication after Device Code Flow failure. RBAC and resource provider checks will not be performed." `
+                        -Recommendation "Re-run the script on a managed/compliant device, or request a DCF exemption in Azure AD."
+                }
+                'StopScript' {
+                    Write-Host "`nStopping script as requested." -ForegroundColor Red
+                    Write-Log -Message "User chose to stop script after DCF failure" -Level Warning
+                    
+                    Add-CheckResult -Category "Authentication" -CheckName "Script Stopped" -Status "Warning" `
+                        -Details "User stopped the script after Device Code Flow failure."
+                    
+                    # Generate partial report before exiting
+                    GenerateHTMLReport
+                    Write-Host "`nPartial report generated at: $ReportPath" -ForegroundColor Cyan
+                    Write-Host "Log file at: $LogPath`n" -ForegroundColor Cyan
+                    exit 1
+                }
+            }
+        }
     }
     else {
         Test-EntraIDAppAuthentication
     }
 }
 
+function Invoke-InteractiveBrowserAuth {
+    <#
+    .SYNOPSIS
+        Fallback authentication using interactive browser sign-in (Connect-AzAccount)
+    #>
+    Write-Log -Message "Attempting interactive browser authentication..." -Level Info
+    Write-Host "`nOpening browser for interactive Azure sign-in..." -ForegroundColor Cyan
+    Write-Host "Sign in with your Azure credentials in the browser window.`n" -ForegroundColor Yellow
+    
+    try {
+        $context = Connect-AzAccount -ErrorAction Stop
+        
+        if ($context) {
+            $accountId = $context.Context.Account.Id
+            $tenantId = $context.Context.Tenant.Id
+            $subscriptionId = $context.Context.Subscription.Id
+            
+            Write-Log -Message "Interactive browser auth successful - Account: $accountId, Tenant: $tenantId" -Level Success
+            
+            Add-CheckResult -Category "Authentication" -CheckName "Interactive Browser Auth" -Status "Pass" `
+                -Details "Successfully authenticated via interactive browser sign-in. Account: $accountId, Tenant: $tenantId, Subscription: $subscriptionId"
+            
+            $script:AzureContext = $context
+            return $true
+        }
+        else {
+            Add-CheckResult -Category "Authentication" -CheckName "Interactive Browser Auth" -Status "Fail" `
+                -Details "Interactive browser authentication failed - no context returned"
+            return $false
+        }
+    }
+    catch {
+        $errorMessage = $_.Exception.Message
+        Write-Log -Message "Interactive browser auth failed: $errorMessage" -Level Error
+        
+        Add-CheckResult -Category "Authentication" -CheckName "Interactive Browser Auth" -Status "Fail" `
+            -Details "Interactive browser authentication failed: $errorMessage" `
+            -Recommendation "Verify network connectivity. If all auth methods fail, the report will include prerequisite and network checks only."
+        
+        return $false
+    }
+}
+
 function Test-DeviceCodeFlow {
     <#
     .SYNOPSIS
-        Tests Device Code Flow authentication
+        Tests Device Code Flow authentication using a background job.
+        User can press Enter to cancel if authentication fails in the browser
+        (e.g. Conditional Access blocks the token).
     #>
     Write-Log -Message "Testing Device Code Flow authentication..." -Level Info
     
@@ -1844,6 +1946,8 @@ Device Code Flow Authentication Process:
 2. A browser window will open to the Microsoft login page
 3. Enter the code shown in the terminal, then sign in with your Azure credentials
 4. The script will detect authentication completion automatically
+5. If authentication fails in the browser (e.g. Conditional Access block),
+   press ENTER in this window to cancel and choose an alternative
 
 Microsoft recommends putting an exemption on Device Code Flow if it's blocked.
 For more information: https://learn.microsoft.com/azure/migrate/troubleshoot-appliance-discovery
@@ -1855,7 +1959,7 @@ For more information: https://learn.microsoft.com/azure/migrate/troubleshoot-app
         if ($proceed -eq 'N' -or $proceed -eq 'n') {
             Add-CheckResult -Category "Authentication" -CheckName "Device Code Flow" -Status "Info" `
                 -Details "Device Code Flow authentication was skipped by user"
-            return
+            return $false
         }
     }
     
@@ -1865,7 +1969,7 @@ For more information: https://learn.microsoft.com/azure/migrate/troubleshoot-app
             Add-CheckResult -Category "Authentication" -CheckName "Device Code Flow" -Status "Fail" `
                 -Details "Az.Accounts module is not installed" `
                 -Recommendation "Install Az.Accounts module: Install-Module -Name Az.Accounts -Repository PSGallery -Force"
-            return
+            return $false
         }
         
         Import-Module Az.Accounts -ErrorAction Stop
@@ -1877,20 +1981,70 @@ For more information: https://learn.microsoft.com/azure/migrate/troubleshoot-app
         # Open browser FIRST so it's ready when the device code appears
         Start-Process "https://microsoft.com/devicelogin"
         
-        # Connect-AzAccount emits the device code as a Warning, then blocks until auth.
-        # After auth it may emit noisy MFA / multi-subscription warnings for secondary
-        # tenants. Redirect Warning stream (3>&1) and filter: show only the device-code
-        # warning, suppress the rest.
-        $context = Connect-AzAccount -UseDeviceAuthentication -ErrorAction Stop 3>&1 | ForEach-Object {
-            if ($_ -is [System.Management.Automation.WarningRecord]) {
-                if ($_.Message -match 'devicelogin|enter the code') {
-                    Write-Warning $_.Message
-                }
-                # else: suppress MFA / subscription noise
-            } else {
-                $_   # pass the account context object through
-            }
+        # Run Connect-AzAccount in a background job so the main thread stays
+        # responsive. This lets the user press Enter to cancel immediately if
+        # authentication fails in the browser (CA block, MFA denial, etc.)
+        # instead of waiting ~15 minutes for the device code to expire.
+        $job = Start-Job -ScriptBlock {
+            Import-Module Az.Accounts -ErrorAction Stop
+            Connect-AzAccount -UseDeviceAuthentication -ErrorAction Stop -WarningAction SilentlyContinue
         }
+        
+        # Poll for the device code from the job's Warning stream and display it
+        $codeDisplayed = $false
+        $codeCheckEnd = (Get-Date).AddSeconds(30)  # device code appears within a few seconds
+        
+        while (-not $codeDisplayed -and (Get-Date) -lt $codeCheckEnd -and $job.State -eq 'Running') {
+            if ($job.ChildJobs[0].Warning.Count -gt 0) {
+                foreach ($warn in $job.ChildJobs[0].Warning) {
+                    Write-Host $warn.Message -ForegroundColor Yellow
+                    $codeDisplayed = $true
+                }
+            }
+            Start-Sleep -Milliseconds 300
+        }
+        
+        Write-Host "`n>> Waiting for authentication to complete..." -ForegroundColor Cyan
+        Write-Host ">> If authentication FAILED in the browser, press ENTER to cancel.`n" -ForegroundColor Yellow
+        
+        # Wait for either: job completes (auth success/fail) or user presses Enter (cancel)
+        while ($job.State -eq 'Running') {
+            if ([Console]::KeyAvailable) {
+                $key = [Console]::ReadKey($true)
+                if ($key.Key -eq 'Enter') {
+                    Write-Host "`nCancelling Device Code Flow..." -ForegroundColor Yellow
+                    Write-Log -Message "User cancelled Device Code Flow (pressed Enter)" -Level Warning
+                    Stop-Job -Job $job
+                    Remove-Job -Job $job -Force
+                    
+                    Add-CheckResult -Category "Authentication" -CheckName "Device Code Flow" -Status "Fail" `
+                        -Details "Device Code Flow cancelled by user. Authentication likely failed in the browser (Conditional Access, MFA denial, or policy block)." `
+                        -Recommendation "Try interactive browser authentication, or request a DCF exemption in Azure AD."
+                    
+                    return $false
+                }
+            }
+            Start-Sleep -Milliseconds 300
+        }
+        
+        # Job finished on its own — check for errors first
+        if ($job.State -eq 'Failed') {
+            $jobError = $job.ChildJobs[0].Error | Select-Object -First 1
+            $errorMessage = if ($jobError) { $jobError.ToString() } else { "Unknown error" }
+            Remove-Job -Job $job -Force
+            
+            Write-Log -Message "Device Code Flow failed: $errorMessage" -Level Error
+            
+            Add-CheckResult -Category "Authentication" -CheckName "Device Code Flow" -Status "Fail" `
+                -Details "Device Code Flow authentication failed: $errorMessage" `
+                -Recommendation "Request exemption for Device Code Flow or use interactive browser authentication."
+            
+            return $false
+        }
+        
+        # Job completed successfully — retrieve the context
+        $context = Receive-Job -Job $job -ErrorAction Stop
+        Remove-Job -Job $job -Force
         
         if ($context) {
             $accountId = $context.Context.Account.Id
@@ -1902,9 +2056,7 @@ For more information: https://learn.microsoft.com/azure/migrate/troubleshoot-app
             Add-CheckResult -Category "Authentication" -CheckName "Device Code Flow" -Status "Pass" `
                 -Details "Successfully authenticated using Device Code Flow. Account: $accountId, Tenant: $tenantId, Subscription: $subscriptionId"
             
-            # Store authenticated context
             $script:AzureContext = $context
-            
             return $true
         }
         else {
@@ -1917,24 +2069,20 @@ For more information: https://learn.microsoft.com/azure/migrate/troubleshoot-app
         $errorMessage = $_.Exception.Message
         Write-Log -Message "Device Code Flow authentication failed: $errorMessage" -Level Error
         
-        # Check if it's a policy block
+        # Clean up job if it exists
+        if ($job) {
+            Stop-Job -Job $job -ErrorAction SilentlyContinue
+            Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+        }
+        
         if ($errorMessage -match "AADSTS") {
             Add-CheckResult -Category "Authentication" -CheckName "Device Code Flow" -Status "Fail" `
-                -Details "Device Code Flow is blocked by Azure AD policy: $errorMessage" `
-                -Recommendation @"
-Device Code Flow appears to be blocked by organizational policy. Options:
-1. Request exemption for Device Code Flow in Azure AD (Recommended by Microsoft)
-2. Use Entra ID App Registration method instead
-3. Contact your Azure administrator
-
-For exemption setup: https://learn.microsoft.com/azure/migrate/troubleshoot-appliance-discovery#error-50072
-For App Registration: https://learn.microsoft.com/azure/migrate/how-to-register-appliance-using-entra-app
-"@
+                -Details "Device Code Flow blocked by Azure AD policy: $errorMessage" `
+                -Recommendation "Request exemption for Device Code Flow or use interactive browser authentication."
         }
         else {
             Add-CheckResult -Category "Authentication" -CheckName "Device Code Flow" -Status "Fail" `
-                -Details "Device Code Flow authentication failed: $errorMessage" `
-                -Recommendation "Verify network connectivity and try again. Consider using Entra ID App Registration method."
+                -Details "Device Code Flow authentication failed: $errorMessage"
         }
         
         return $false
