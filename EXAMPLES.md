@@ -4,47 +4,107 @@
 
 ### Basic Interactive Run
 ```powershell
-# Prompts for all options
+# Prompts for all options: source environment, migration approach, endpoint type, URL test mode, region
 .\AzureMigrateApplianceReadinessCheck.ps1
 ```
 
 ### Interactive with Some Parameters Pre-set
 ```powershell
-# Pre-set migration type, still prompt for others
-.\AzureMigrateApplianceReadinessCheck.ps1 -MigrationApproach Agentless
+# Pre-set source and URL mode, still prompt for others
+.\AzureMigrateApplianceReadinessCheck.ps1 -DiscoveryType VMware -UrlTestMode Wildcard
+```
+
+---
+
+## URL Testing Mode Examples
+
+### Wildcard Mode (DNS + HTTP Verification)
+```powershell
+# Generic wildcard domain verification - no CSV needed
+.\AzureMigrateApplianceReadinessCheck.ps1 `
+    -DiscoveryType VMware `
+    -MigrationApproach Agentless `
+    -EndpointType Public `
+    -UrlTestMode Wildcard `
+    -CloudType Public
+```
+
+### Absolute Mode (Region-Specific URLs from CSV)
+```powershell
+# Test exact URLs for East Asia region
+.\AzureMigrateApplianceReadinessCheck.ps1 `
+    -DiscoveryType VMware `
+    -MigrationApproach Agentless `
+    -EndpointType Public `
+    -UrlTestMode Absolute `
+    -AzureRegion EA
+```
+
+### Absolute Mode with Custom CSV Path
+```powershell
+.\AzureMigrateApplianceReadinessCheck.ps1 `
+    -DiscoveryType HyperV `
+    -UrlTestMode Absolute `
+    -AzureRegion WE `
+    -CsvPath "C:\Data\MigrateAppliance_ListofURLs_v3.0_combined.csv"
+```
+
+### Absolute Mode - Physical Servers in West US 2
+```powershell
+.\AzureMigrateApplianceReadinessCheck.ps1 `
+    -InteractiveMode $false `
+    -DiscoveryType Physical `
+    -EndpointType Public `
+    -UrlTestMode Absolute `
+    -AzureRegion WUS2 `
+    -PhysicalServersCSV ".\servers.csv" `
+    -AuthMethod DeviceCodeFlow
 ```
 
 ---
 
 ## Automated/Parameter Mode Examples
 
-### VMware Agentless Migration
+### VMware Agentless Migration (Wildcard)
 ```powershell
 .\AzureMigrateApplianceReadinessCheck.ps1 `
     -InteractiveMode $false `
-    -MigrationApproach Agentless `
     -DiscoveryType VMware `
+    -MigrationApproach Agentless `
     -EndpointType Public `
+    -UrlTestMode Wildcard `
     -AuthMethod DeviceCodeFlow `
     -SubscriptionId "12345678-1234-1234-1234-123456789012" `
     -ResourceGroupName "AzureMigrateRG"
 ```
 
-### VMware with Government Cloud
+### VMware with Government Cloud (Wildcard)
 ```powershell
 .\AzureMigrateApplianceReadinessCheck.ps1 `
     -InteractiveMode $false `
-    -MigrationApproach Agentless `
     -DiscoveryType VMware `
+    -MigrationApproach Agentless `
+    -UrlTestMode Wildcard `
     -CloudType Government `
+    -AuthMethod DeviceCodeFlow
+```
+
+### VMware with Absolute URLs (East Asia)
+```powershell
+.\AzureMigrateApplianceReadinessCheck.ps1 `
+    -InteractiveMode $false `
+    -DiscoveryType VMware `
+    -MigrationApproach Agentless `
+    -UrlTestMode Absolute `
+    -AzureRegion EA `
     -AuthMethod DeviceCodeFlow
 ```
 
 ### VMware with Custom Paths
 ```powershell
 .\AzureMigrateApplianceReadinessCheck.ps1 `
-    -MigrationApproach Agentless `
     -DiscoveryType VMware `
+    -MigrationApproach Agentless `
     -LogPath "C:\AzureMigrate\Logs\Validation.log" `
     -ReportPath "C:\AzureMigrate\Reports\ReadinessReport.html"
 ```
@@ -53,18 +113,19 @@
 ```powershell
 .\AzureMigrateApplianceReadinessCheck.ps1 `
     -InteractiveMode $false `
-    -MigrationApproach Agentless `
     -DiscoveryType HyperV `
     -EndpointType Public `
+    -UrlTestMode Wildcard `
     -AuthMethod DeviceCodeFlow
 ```
 
-### Physical Servers with CSV
+### Physical Servers with CSV (Absolute URLs)
 ```powershell
 .\AzureMigrateApplianceReadinessCheck.ps1 `
     -InteractiveMode $false `
-    -MigrationApproach AgentBased `
     -DiscoveryType Physical `
+    -UrlTestMode Absolute `
+    -AzureRegion WE `
     -PhysicalServersCSV "C:\Servers\PhysicalServers.csv" `
     -AuthMethod DeviceCodeFlow `
     -SubscriptionId "12345678-1234-1234-1234-123456789012" `
@@ -75,7 +136,6 @@
 ```powershell
 # Prompts for CSV path during execution
 .\AzureMigrateApplianceReadinessCheck.ps1 `
-    -MigrationApproach AgentBased `
     -DiscoveryType Physical
 ```
 
@@ -86,8 +146,8 @@
 ### VMware with Private Endpoints
 ```powershell
 .\AzureMigrateApplianceReadinessCheck.ps1 `
-    -MigrationApproach Agentless `
     -DiscoveryType VMware `
+    -MigrationApproach Agentless `
     -EndpointType Private `
     -AuthMethod DeviceCodeFlow
 ```
@@ -96,7 +156,6 @@
 ```powershell
 .\AzureMigrateApplianceReadinessCheck.ps1 `
     -InteractiveMode $false `
-    -MigrationApproach Agentless `
     -DiscoveryType HyperV `
     -EndpointType Private `
     -AuthMethod EntraIDApp
@@ -110,8 +169,8 @@
 ```powershell
 # Assumes registry and certificate are already configured
 .\AzureMigrateApplianceReadinessCheck.ps1 `
-    -MigrationApproach Agentless `
     -DiscoveryType VMware `
+    -MigrationApproach Agentless `
     -AuthMethod EntraIDApp `
     -InteractiveMode $false `
     -SubscriptionId "12345678-1234-1234-1234-123456789012" `
@@ -122,8 +181,9 @@
 ```powershell
 .\AzureMigrateApplianceReadinessCheck.ps1 `
     -InteractiveMode $false `
-    -MigrationApproach AgentBased `
     -DiscoveryType Physical `
+    -UrlTestMode Absolute `
+    -AzureRegion NE `
     -PhysicalServersCSV ".\servers.csv" `
     -AuthMethod EntraIDApp `
     -SubscriptionId "your-subscription-id"
@@ -136,8 +196,8 @@
 ### Specify Custom Paths
 ```powershell
 .\AzureMigrateApplianceReadinessCheck.ps1 `
-    -MigrationApproach Agentless `
     -DiscoveryType VMware `
+    -MigrationApproach Agentless `
     -LogPath "C:\AzureMigrate\Logs\Validation.log" `
     -ReportPath "C:\AzureMigrate\Reports\ReadinessReport.html"
 ```
@@ -145,8 +205,8 @@
 ### Network Share for Reports (Team Access)
 ```powershell
 .\AzureMigrateApplianceReadinessCheck.ps1 `
-    -MigrationApproach Agentless `
     -DiscoveryType VMware `
+    -MigrationApproach Agentless `
     -ReportPath "\\fileserver\MigrationReports\Appliance_$(Get-Date -Format 'yyyyMMdd').html"
 ```
 
@@ -154,14 +214,31 @@
 
 ## Advanced Scenarios
 
-### Complete Validation - All Options
+### Complete Validation - All Options (Wildcard)
 ```powershell
 .\AzureMigrateApplianceReadinessCheck.ps1 `
     -InteractiveMode $false `
-    -MigrationApproach Agentless `
     -DiscoveryType VMware `
+    -MigrationApproach Agentless `
     -EndpointType Public `
+    -UrlTestMode Wildcard `
     -CloudType Public `
+    -AuthMethod DeviceCodeFlow `
+    -SubscriptionId "12345678-1234-1234-1234-123456789012" `
+    -ResourceGroupName "AzureMigrateRG" `
+    -LogPath "C:\Logs\AzureMigrate.log" `
+    -ReportPath "C:\Reports\Readiness.html"
+```
+
+### Complete Validation - All Options (Absolute)
+```powershell
+.\AzureMigrateApplianceReadinessCheck.ps1 `
+    -InteractiveMode $false `
+    -DiscoveryType VMware `
+    -MigrationApproach Agentless `
+    -EndpointType Public `
+    -UrlTestMode Absolute `
+    -AzureRegion EA `
     -AuthMethod DeviceCodeFlow `
     -SubscriptionId "12345678-1234-1234-1234-123456789012" `
     -ResourceGroupName "AzureMigrateRG" `
@@ -174,7 +251,7 @@
 # For weekly validation checks
 $action = New-ScheduledTaskAction `
     -Execute 'PowerShell.exe' `
-    -Argument "-File C:\Scripts\AzureMigrateApplianceReadinessCheck.ps1 -InteractiveMode `$false -MigrationApproach Agentless -DiscoveryType VMware -AuthMethod EntraIDApp"
+    -Argument "-File C:\Scripts\AzureMigrateApplianceReadinessCheck.ps1 -InteractiveMode `$false -DiscoveryType VMware -MigrationApproach Agentless -UrlTestMode Wildcard -AuthMethod EntraIDApp"
 
 $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At 8am
 
@@ -190,8 +267,10 @@ Register-ScheduledTask `
 # Production environment
 .\AzureMigrateApplianceReadinessCheck.ps1 `
     -InteractiveMode $false `
-    -MigrationApproach Agentless `
     -DiscoveryType VMware `
+    -MigrationApproach Agentless `
+    -UrlTestMode Absolute `
+    -AzureRegion EA `
     -SubscriptionId "prod-sub-id" `
     -ResourceGroupName "Prod-AzureMigrate" `
     -ReportPath ".\Reports\Prod_Validation.html"
@@ -199,8 +278,10 @@ Register-ScheduledTask `
 # Test environment
 .\AzureMigrateApplianceReadinessCheck.ps1 `
     -InteractiveMode $false `
-    -MigrationApproach Agentless `
     -DiscoveryType VMware `
+    -MigrationApproach Agentless `
+    -UrlTestMode Absolute `
+    -AzureRegion WE `
     -SubscriptionId "test-sub-id" `
     -ResourceGroupName "Test-AzureMigrate" `
     -ReportPath ".\Reports\Test_Validation.html"
@@ -215,8 +296,8 @@ Register-ScheduledTask `
 # Note: Script doesn't have this feature yet, but would be useful
 # This is a conceptual example for future enhancement
 .\AzureMigrateApplianceReadinessCheck.ps1 `
-    -MigrationApproach Agentless `
     -DiscoveryType VMware `
+    -MigrationApproach Agentless `
     -SkipAuthentication $true `
     -SkipRBAC $true
 ```
@@ -258,8 +339,9 @@ Get-ADComputer -Filter {OperatingSystem -like "*Server*"} -Properties DNSHostNam
 
 # Run validation with generated CSV
 .\AzureMigrateApplianceReadinessCheck.ps1 `
-    -MigrationApproach AgentBased `
     -DiscoveryType Physical `
+    -UrlTestMode Absolute `
+    -AzureRegion WE `
     -PhysicalServersCSV ".\AllServers.csv"
 ```
 
@@ -271,8 +353,10 @@ Get-ADComputer -Filter {OperatingSystem -like "*Server*"} -Properties DNSHostNam
 ```powershell
 # Wrapper script for standardized deployment
 $config = @{
-    MigrationApproach = "Agentless"
     DiscoveryType = "VMware"
+    MigrationApproach = "Agentless"
+    UrlTestMode = "Absolute"
+    AzureRegion = "EA"
     SubscriptionId = (Get-AzContext).Subscription.Id
     ResourceGroupName = "AzureMigrate-Prod"
 }
@@ -301,8 +385,10 @@ steps:
     ScriptPath: 'scripts/AzureMigrateApplianceReadinessCheck.ps1'
     ScriptArguments: >
       -InteractiveMode $false
-      -MigrationApproach Agentless
       -DiscoveryType VMware
+      -MigrationApproach Agentless
+      -UrlTestMode Absolute
+      -AzureRegion EA
       -AuthMethod EntraIDApp
       -SubscriptionId $(subscriptionId)
       -ResourceGroupName $(resourceGroupName)
@@ -319,12 +405,14 @@ steps:
 
 ## Quick Reference Table
 
-| Scenario | Migration Approach | Discovery Type | Special Parameters |
-|----------|-------------------|----------------|-------------------|
-| VMware vCenter | Agentless | VMware | None |
-| Hyper-V Hosts | Agentless | HyperV | None |
-| Physical Servers | AgentBased | Physical | PhysicalServersCSV |
-| Government Cloud | Any | Any | CloudType Government |
+| Scenario | Discovery Type | Migration Approach | Special Parameters |
+|----------|---------------|-------------------|-------------------|
+| VMware vCenter | VMware | Agentless | None |
+| VMware Agent-Based | VMware | AgentBased | None |
+| Hyper-V Hosts | HyperV | (auto: Agentless) | None |
+| Physical Servers | Physical | (auto: AgentBased) | PhysicalServersCSV |
+| Absolute URLs | Any | Any | UrlTestMode Absolute, AzureRegion |
+| Government Cloud | Any | Any | UrlTestMode Wildcard, CloudType Government |
 | Private Link | Any | Any | EndpointType Private |
 | Service Principal | Any | Any | AuthMethod EntraIDApp |
 

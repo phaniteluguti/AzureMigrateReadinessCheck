@@ -21,14 +21,16 @@ cd C:\Users\pteluguti
 
 The script will guide you through:
 
-1. **Accept Information Popup** - Read about Azure Migrate and click "Accept & Close"
-2. **Select Migration Approach** - Choose Agentless or Agent-Based
-3. **Select Discovery Type** - Choose VMware, Hyper-V, or Physical
-4. **Select Cloud Type** - Choose Public or Government
-5. **Network Testing** - Test connectivity to Azure endpoints
-6. **Authentication** - Sign in to Azure via browser (Device Code Flow)
-7. **Permissions Check** - Validate Contributor role and resource providers
-8. **Report Generation** - Create HTML report with all findings
+1. **Welcome Banner** - See what the script checks and doesn't check
+2. **Select Source Environment** - Choose VMware, Hyper-V, or Physical/AWS/GCP
+3. **Select Migration Approach** - Agentless or Agent-Based (only asked for VMware)
+4. **Select Endpoint Type** - Public or Private
+5. **Select URL Testing Mode** - Wildcard (DNS) or Absolute (region-specific CSV)
+6. **Select Region** - If Absolute mode, pick your Azure region from the CSV
+7. **Network Testing** - Test connectivity to Azure endpoints
+8. **Authentication** - Sign in to Azure via browser (Device Code Flow)
+9. **Permissions Check** - Validate Contributor role and resource providers
+10. **Report Generation** - Create HTML report with all findings
 
 > **Note:** Post-discovery features (Software Inventory, SQL/Web App Discovery, Dependency Analysis)
 > are configured in the appliance configuration manager after setup.
@@ -79,9 +81,11 @@ Real-time color-coded progress:
 # Interactive mode - just press Enter for defaults
 .\AzureMigrateApplianceReadinessCheck.ps1
 # When prompted:
+# - Source Environment: 1 (VMware)
 # - Migration Approach: 1 (Agentless)
-# - Discovery Type: 1 (VMware)
-# - Cloud Type: 1 (Public)
+# - Endpoint Type: 1 (Public)
+# - URL Test Mode: 1 (Wildcard) or 2 (Absolute)
+# - If Absolute: Select your Azure region
 ```
 
 ### Scenario 2: Physical Servers
@@ -95,8 +99,10 @@ Real-time color-coded progress:
 # Run script
 .\AzureMigrateApplianceReadinessCheck.ps1
 # When prompted:
-# - Migration Approach: 2 (AgentBased)
-# - Discovery Type: 3 (Physical)
+# - Source Environment: 3 (Physical)
+# - Endpoint Type: 1 (Public)
+# - URL Test Mode: 2 (Absolute)
+# - Select Region: Pick your target Azure region
 # - CSV Path: C:\PhysicalServers.csv
 ```
 
@@ -104,8 +110,9 @@ Real-time color-coded progress:
 ```powershell
 .\AzureMigrateApplianceReadinessCheck.ps1
 # When prompted:
-# - Migration Approach: 1 (Agentless)
-# - Discovery Type: 2 (HyperV)
+# - Source Environment: 2 (HyperV)
+# - Endpoint Type: 1 (Public)
+# - URL Test Mode: 1 (Wildcard)
 # - Cloud Type: 1 (Public)
 ```
 

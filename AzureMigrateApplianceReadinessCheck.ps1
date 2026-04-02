@@ -6,14 +6,17 @@
     Comprehensive PowerShell script to validate prerequisites, network connectivity, 
     authentication, and Azure RBAC permissions required for Azure Migrate appliance deployment.
     
-    Performs context-aware, conditional checks based on your migration approach, discovery type,
-    and selected optional features. Only validates what is relevant to your specific configuration.
+    Performs context-aware, conditional checks based on your source environment, migration approach,
+    endpoint type, and URL testing mode. Only validates what is relevant to your configuration.
     
     Supports:
-    - Agentless migration (VMware, Hyper-V)
-    - Agent-based migration (Physical servers)
+    - Source environments: VMware, Hyper-V, Physical/AWS/GCP
+    - Agentless migration (VMware, Hyper-V) and Agent-based migration (Physical)
     - Device Code Flow and Entra ID App Registration authentication
-    - Public, Private, and Government cloud endpoint validation
+    - Public and Private endpoint validation
+    - Two URL testing modes:
+        Wildcard  - Tests generic wildcard domains via DNS + hardcoded HTTP endpoints (no CSV needed)
+        Absolute  - Tests exact region-specific URLs from an external CSV file
     
     Note: Post-discovery features (Software Inventory, SQL/Web App Discovery, Dependency Analysis)
     are configured in the appliance configuration manager after setup and validated by the appliance itself.
@@ -21,17 +24,26 @@
 .PARAMETER InteractiveMode
     Run the script in interactive mode with prompts (default: $true)
 
-.PARAMETER MigrationApproach
-    Migration approach: 'Agentless' or 'AgentBased'
-
 .PARAMETER DiscoveryType
-    Discovery type: 'VMware', 'HyperV', or 'Physical'
+    Source environment: 'VMware', 'HyperV', or 'Physical'
+
+.PARAMETER MigrationApproach
+    Migration approach: 'Agentless' or 'AgentBased'. Only relevant for VMware (Hyper-V is always Agentless, Physical is always AgentBased).
 
 .PARAMETER EndpointType
     Endpoint type: 'Public' or 'Private'
 
+.PARAMETER UrlTestMode
+    URL testing mode: 'Wildcard' or 'Absolute'. Wildcard uses generic DNS verification. Absolute uses region-specific URLs from the CSV file.
+
+.PARAMETER AzureRegion
+    Azure region code (e.g., 'EA', 'WUS2', 'WE') for Absolute URL testing mode. Must match a Sheet value in the CSV.
+
+.PARAMETER CsvPath
+    Path to the CSV file containing region-specific absolute URLs. Defaults to MigrateAppliance_ListofURLs_v3.0_combined.csv in the script directory.
+
 .PARAMETER CloudType
-    Azure cloud environment: 'Public' or 'Government'. Determines which URL set to validate (default: 'Public')
+    Azure cloud environment: 'Public' or 'Government'. Only used in Wildcard URL testing mode (default: 'Public').
 
 .PARAMETER AuthMethod
     Authentication method: 'DeviceCodeFlow' or 'EntraIDApp'
@@ -56,18 +68,22 @@
     Run in fully interactive mode - prompts for all configuration choices
 
 .EXAMPLE
-    .\AzureMigrateApplianceReadinessCheck.ps1 -MigrationApproach Agentless -DiscoveryType VMware -EndpointType Public
-    VMware agentless with public endpoints - runs core checks only
+    .\AzureMigrateApplianceReadinessCheck.ps1 -DiscoveryType VMware -EndpointType Public -UrlTestMode Wildcard
+    VMware with public endpoints using wildcard DNS testing
 
 .EXAMPLE
-    .\AzureMigrateApplianceReadinessCheck.ps1 -InteractiveMode $false -MigrationApproach Agentless -DiscoveryType VMware -AuthMethod EntraIDApp -SubscriptionId "12345678-1234-1234-1234-123456789012" -ResourceGroupName "AzureMigrateRG" -CloudType Government
-    Fully automated non-interactive run with Government cloud URLs and Entra ID App auth
+    .\AzureMigrateApplianceReadinessCheck.ps1 -DiscoveryType VMware -EndpointType Public -UrlTestMode Absolute -AzureRegion EA
+    VMware with public endpoints using absolute region-specific URLs for East Asia
+
+.EXAMPLE
+    .\AzureMigrateApplianceReadinessCheck.ps1 -InteractiveMode $false -DiscoveryType Physical -UrlTestMode Absolute -AzureRegion WE -AuthMethod EntraIDApp -SubscriptionId "12345678-1234-1234-1234-123456789012" -ResourceGroupName "AzureMigrateRG"
+    Fully automated non-interactive run for Physical servers with absolute URL testing in West Europe
 
 .NOTES
     File Name      : AzureMigrateApplianceReadinessCheck.ps1
     Author         : Azure Migration Team
     Prerequisite   : PowerShell 5.1 or later, Az PowerShell modules
-    Version        : 2.0
+    Version        : 3.0
     Date           : April 2, 2026
 #>
 
@@ -77,16 +93,26 @@ param(
     [bool]$InteractiveMode = $true,
     
     [Parameter(Mandatory = $false)]
-    [ValidateSet('Agentless', 'AgentBased')]
-    [string]$MigrationApproach,
-    
-    [Parameter(Mandatory = $false)]
     [ValidateSet('VMware', 'HyperV', 'Physical')]
     [string]$DiscoveryType,
     
     [Parameter(Mandatory = $false)]
+    [ValidateSet('Agentless', 'AgentBased')]
+    [string]$MigrationApproach,
+    
+    [Parameter(Mandatory = $false)]
     [ValidateSet('Public', 'Private')]
     [string]$EndpointType = 'Public',
+    
+    [Parameter(Mandatory = $false)]
+    [ValidateSet('Wildcard', 'Absolute')]
+    [string]$UrlTestMode,
+    
+    [Parameter(Mandatory = $false)]
+    [string]$AzureRegion,
+    
+    [Parameter(Mandatory = $false)]
+    [string]$CsvPath = (Join-Path $PSScriptRoot "MigrateAppliance_ListofURLs_v3.0_combined.csv"),
     
     [Parameter(Mandatory = $false)]
     [ValidateSet('Public', 'Government')]
@@ -118,14 +144,18 @@ param(
 # GLOBAL VARIABLES AND CONSTANTS
 # ============================================================================
 
-$script:ScriptVersion = "2.0"
+$script:ScriptVersion = "3.0"
 $script:CheckResults = @()
 $script:StartTime = Get-Date
 $script:ErrorCount = 0
 $script:WarningCount = 0
 $script:SuccessCount = 0
+$script:AzModulesAvailable = $false
+# Note: $UrlTestMode, $AzureRegion, $CsvPath are already in script scope via param block.
+# Do NOT reassign them here — it triggers ValidateSet errors when the param is empty.
+$script:CsvUrlEntries = @()
 
-# Azure Public Cloud URLs for Network Connectivity Checks
+# Azure Public Cloud URLs - HTTP-testable endpoints (server responds to HTTPS requests)
 $script:AzurePublicEndpoints = @{
     'Essential' = @(
         'https://portal.azure.com',
@@ -134,50 +164,41 @@ $script:AzurePublicEndpoints = @{
         'https://graph.microsoft.com'
     )
     'AzureMigrate' = @(
-        'https://management.azure.com',
-        'https://login.microsoftonline.com',
         'https://login.windows.net',
-        'https://www.msftauth.net',
-        'https://www.msauth.net',
         'https://www.microsoft.com',
         'https://www.live.com',
         'https://www.office.com'
     )
-    'AzureMigrateService' = @(
-        'https://discoverysrv.windowsazure.com',
-        'https://migration.windowsazure.com',
-        'https://hypervrecoverymanager.windowsazure.com'
-    )
     'Identity' = @(
         'https://login.microsoftonline-p.com',
-        'https://microsoftazuread-sso.com',
         'https://cloud.microsoft'
     )
     'Telemetry' = @(
-        'https://dc.services.visualstudio.com',
-        'https://applicationinsights.azure.com',
-        'https://loganalytics.io'
-    )
-    'Storage' = @(
-        'https://www.blob.core.windows.net'
-    )
-    'ServiceBus' = @(
-        'https://www.servicebus.windows.net'
-    )
-    'KeyVault' = @(
-        'https://vault.azure.net'
+        'https://dc.services.visualstudio.com'
     )
     'Updates' = @(
         'https://aka.ms/latestapplianceservices',
-        'https://download.microsoft.com/download',
-        'https://prod.do.dsp.mp.microsoft.com'
-    )
-    'TimeSync' = @(
-        'https://time.windows.com'
+        'https://download.microsoft.com/download'
     )
 }
 
-# Azure Government Cloud URLs
+# Azure Public Cloud - Wildcard domains (cannot be HTTP-tested at base; verified via DNS)
+$script:AzurePublicWildcardDomains = @{
+    'KeyVault' = @('*.vault.azure.net')
+    'Storage' = @('*.blob.core.windows.net')
+    'ServiceBus' = @('*.servicebus.windows.net')
+    'AzureMigrateService' = @(
+        '*.discoverysrv.windowsazure.com',
+        '*.migration.windowsazure.com',
+        '*.hypervrecoverymanager.windowsazure.com'
+    )
+    'Identity' = @('*.microsoftazuread-sso.com', '*.msftauth.net', '*.msauth.net')
+    'Telemetry' = @('*.applicationinsights.azure.com', '*.loganalytics.io')
+    'DeliveryOptimization' = @('*.prod.do.dsp.mp.microsoft.com')
+    'TimeSync' = @('time.windows.com')
+}
+
+# Azure Government Cloud URLs - HTTP-testable endpoints
 $script:AzureGovernmentEndpoints = @{
     'Essential' = @(
         'https://portal.azure.us',
@@ -186,28 +207,24 @@ $script:AzureGovernmentEndpoints = @{
         'https://graph.microsoft.us'
     )
     'AzureMigrate' = @(
-        'https://management.usgovcloudapi.net',
-        'https://login.microsoftonline.us',
         'https://login.windows.net'
-    )
-    'AzureMigrateService' = @(
-        'https://discoverysrv.windowsazure.us',
-        'https://migration.windowsazure.us',
-        'https://hypervrecoverymanager.windowsazure.us'
-    )
-    'Storage' = @(
-        'https://www.blob.core.usgovcloudapi.net'
-    )
-    'ServiceBus' = @(
-        'https://www.servicebus.usgovcloudapi.net'
-    )
-    'KeyVault' = @(
-        'https://vault.usgovcloudapi.net'
     )
     'Updates' = @(
         'https://aka.ms/latestapplianceservices',
         'https://download.microsoft.com/download'
     )
+}
+
+# Azure Government Cloud - Wildcard domains (verified via DNS)
+$script:AzureGovernmentWildcardDomains = @{
+    'AzureMigrateService' = @(
+        '*.discoverysrv.windowsazure.us',
+        '*.migration.windowsazure.us',
+        '*.hypervrecoverymanager.windowsazure.us'
+    )
+    'Storage' = @('*.blob.core.usgovcloudapi.net')
+    'ServiceBus' = @('*.servicebus.usgovcloudapi.net')
+    'KeyVault' = @('*.vault.usgovcloudapi.net')
 }
 
 # Required Azure Resource Providers for Azure Migrate
@@ -397,6 +414,136 @@ function Show-InfoPopup {
     $form.Dispose()
     
     return ($result -eq [System.Windows.Forms.DialogResult]::OK)
+}
+
+function Show-WelcomeBanner {
+    <#
+    .SYNOPSIS
+        Displays a welcome banner explaining what the script validates
+    #>
+    Write-Host ""
+    Write-Host "========================================================================" -ForegroundColor Cyan
+    Write-Host "  Azure Migrate Appliance Readiness Check v$($script:ScriptVersion)" -ForegroundColor Cyan
+    Write-Host "========================================================================" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  This script validates PRE-SETUP prerequisites for Azure Migrate" -ForegroundColor White
+    Write-Host "  appliance deployment. It checks:" -ForegroundColor White
+    Write-Host ""
+    Write-Host "    [+] Hardware & OS requirements" -ForegroundColor Green
+    Write-Host "    [+] PowerShell version & modules" -ForegroundColor Green
+    Write-Host "    [+] Network connectivity to Azure endpoints" -ForegroundColor Green
+    Write-Host "    [+] Azure authentication (Device Code Flow / Entra ID App)" -ForegroundColor Green
+    Write-Host "    [+] RBAC roles & resource provider registrations" -ForegroundColor Green
+    Write-Host "    [+] FIPS mode, time sync, execution policy" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "  This script does NOT validate:" -ForegroundColor Gray
+    Write-Host "    [-] Post-discovery features (Software Inventory, SQL/Web App)" -ForegroundColor Gray
+    Write-Host "    [-] Appliance configuration manager settings" -ForegroundColor Gray
+    Write-Host "    [-] vCenter/Hyper-V host credentials" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "========================================================================" -ForegroundColor Cyan
+    Write-Host ""
+}
+
+function Import-UrlCsv {
+    <#
+    .SYNOPSIS
+        Imports and parses the absolute URL CSV file, returning URLs filtered by region and fabric type
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CsvFilePath,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$Region,
+        
+        [Parameter(Mandatory = $true)]
+        [string[]]$FabricTypes
+    )
+    
+    if (-not (Test-Path $CsvFilePath)) {
+        Write-Log -Message "CSV file not found: $CsvFilePath" -Level Error
+        throw "CSV file not found: $CsvFilePath"
+    }
+    
+    $allRows = Import-Csv -Path $CsvFilePath
+    
+    if ($allRows.Count -eq 0) {
+        Write-Log -Message "CSV file is empty: $CsvFilePath" -Level Error
+        throw "CSV file is empty"
+    }
+    
+    # Filter rows matching the selected region (Sheet column contains region code in parentheses)
+    $regionRows = $allRows | Where-Object { $_.Sheet -match "\($Region\)$" }
+    
+    if ($regionRows.Count -eq 0) {
+        Write-Log -Message "No URLs found for region '$Region' in CSV" -Level Error
+        $availCodes = ($allRows | Select-Object -ExpandProperty Sheet -Unique | ForEach-Object {
+            if ($_ -match '\(([^)]+)\)$') { $Matches[1] }
+        }) -join ', '
+        throw "No URLs found for region '$Region'. Available regions: $availCodes"
+    }
+    
+    # Filter by fabric types (always include "Common to all fabrics" + discovery-specific)
+    $filteredRows = $regionRows | Where-Object {
+        $fabric = $_.Fabric.Trim()
+        foreach ($ft in $FabricTypes) {
+            if ($fabric -eq $ft) { return $true }
+        }
+        return $false
+    }
+    
+    # Deduplicate by URL
+    $uniqueUrls = @{}
+    $result = @()
+    foreach ($row in $filteredRows) {
+        $url = $row.URL.Trim()
+        if (-not $uniqueUrls.ContainsKey($url)) {
+            $uniqueUrls[$url] = $true
+            $result += [PSCustomObject]@{
+                URL     = $url
+                Details = $row.Details
+                Fabric  = $row.Fabric
+            }
+        }
+    }
+    
+    Write-Log -Message "Loaded $($result.Count) unique URLs for region '$Region' (fabrics: $($FabricTypes -join ', '))" -Level Info
+    return $result
+}
+
+function Get-AvailableRegions {
+    <#
+    .SYNOPSIS
+        Extracts available region codes from the CSV file
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CsvFilePath
+    )
+    
+    if (-not (Test-Path $CsvFilePath)) {
+        return @()
+    }
+    
+    $allRows = Import-Csv -Path $CsvFilePath
+    $regions = @()
+    
+    $allRows | Select-Object -ExpandProperty Sheet -Unique | ForEach-Object {
+        if ($_ -match '\(([^)]+)\)$') {
+            $code = $Matches[1]
+            $name = ($_ -replace "\s*\([^)]+\)$", '').Trim()
+            $regions += [PSCustomObject]@{
+                Code     = $code
+                Name     = $name
+                Display  = "$name ($code)"
+            }
+        }
+    }
+    
+    return $regions | Sort-Object -Property Name
 }
 
 function Show-SelectionMenu {
@@ -677,12 +824,14 @@ function Test-RequiredModules {
     }
     
     if ($missingModules.Count -eq 0) {
+        $script:AzModulesAvailable = $true
         Add-CheckResult -Category "Prerequisites" -CheckName "Required Modules" -Status "Pass" `
             -Details "All required Azure PowerShell modules are installed: $($requiredModules -join ', ')"
     }
     else {
+        $script:AzModulesAvailable = $false
         Add-CheckResult -Category "Prerequisites" -CheckName "Required Modules" -Status "Warning" `
-            -Details "Missing modules: $($missingModules -join ', ')" `
+            -Details "Missing modules: $($missingModules -join ', '). Authentication and RBAC checks will be skipped." `
             -Recommendation "Install missing modules: Install-Module -Name $($missingModules -join ',') -Repository PSGallery -Force"
     }
 }
@@ -810,43 +959,44 @@ function Test-TimeSyncService {
 function Get-MigrationConfiguration {
     <#
     .SYNOPSIS
-        Gathers migration configuration through interactive prompts or parameters
+        Gathers migration configuration through the v3.0 interactive flow:
+        Welcome -> Source Environment -> Migration Approach (VMware only) -> Endpoint Type ->
+        URL Test Mode -> Region (if Absolute) / Cloud (if Wildcard) -> Physical CSV (if Physical)
     #>
     [CmdletBinding()]
     param()
     
-    Write-Host "`n========================================" -ForegroundColor Cyan
-    Write-Host "MIGRATION CONFIGURATION" -ForegroundColor Cyan
-    Write-Host "========================================`n" -ForegroundColor Cyan
+    # --- Step 1: Welcome Banner + Disclaimer ---
+    Show-WelcomeBanner
     
-    # Show information about Azure Migrate
     $infoMessage = @"
 Azure Migrate Appliance Readiness Check v$($script:ScriptVersion)
 ========================================
 
-This script validates the prerequisites required for Azure Migrate appliance deployment.
-It performs CONTEXT-AWARE checks - only validating what is relevant to your configuration.
+This script validates the prerequisites required for Azure Migrate
+appliance deployment. It performs CONTEXT-AWARE checks - only
+validating what is relevant to your configuration.
 
-Two Migration Approaches:
--------------------------
-1. AGENTLESS Migration (Recommended)
-   - For VMware and Hyper-V environments
-   - Discovery: Collect server metadata, performance data, dependencies
-   - Replication: Agentless replication to Azure without installing agents
+Source Environments Supported:
+------------------------------
+1. VMware (Agentless or Agent-Based)
+2. Hyper-V (Agentless)
+3. Physical / AWS / GCP (Agent-Based)
 
-2. AGENT-BASED Migration
-   - For Physical servers or unsupported virtualization platforms
-   - Discovery: Collect server metadata, performance data
-   - Replication: Requires agents on each server (not covered in this script)
+URL Testing Modes:
+------------------
+- Wildcard: Tests generic wildcard domains via DNS (no CSV needed)
+- Absolute: Tests exact region-specific URLs from a CSV file
 
-Optional Features (configured post-setup in appliance):
--------------------------------------------------------
-After the appliance is deployed, you configure these in the appliance configuration manager:
-- Software Inventory, SQL Server Discovery, Web App Discovery, Dependency Analysis
-These are validated by the appliance itself during operation.
+Post-Discovery Features (NOT covered here):
+--------------------------------------------
+Software Inventory, SQL Server Discovery, Web App Discovery,
+and Dependency Analysis are configured in the appliance
+configuration manager after setup and validated by the appliance.
 
 This script focuses on PRE-SETUP prerequisites only:
-- Hardware, OS, network connectivity, Azure RBAC, resource providers, FIPS mode, time sync
+- Hardware, OS, network connectivity, Azure RBAC, resource
+  providers, FIPS mode, time sync
 
 Documentation:
 - VMware: https://learn.microsoft.com/azure/migrate/migrate-support-matrix-vmware
@@ -865,31 +1015,11 @@ Documentation:
         Write-Host $infoMessage -ForegroundColor Cyan
     }
     
-    # Get Migration Approach
-    if ([string]::IsNullOrWhiteSpace($script:MigrationApproach)) {
-        if ($InteractiveMode) {
-            $script:MigrationApproach = Show-SelectionMenu -Title "Select Migration Approach" `
-                -Options @('Agentless', 'AgentBased') -DefaultOption 'Agentless'
-        }
-        else {
-            Write-Log -Message "MigrationApproach parameter is required in non-interactive mode" -Level Error
-            throw "MigrationApproach parameter is required"
-        }
-    }
-    
-    Write-Log -Message "Selected Migration Approach: $($script:MigrationApproach)" -Level Info
-    
-    # Get Discovery Type
+    # --- Step 2: Source Environment (Discovery Type) ---
     if ([string]::IsNullOrWhiteSpace($script:DiscoveryType)) {
         if ($InteractiveMode) {
-            $availableTypes = if ($script:MigrationApproach -eq 'Agentless') {
-                @('VMware', 'HyperV')
-            }
-            else {
-                @('Physical')
-            }
-            
-            $script:DiscoveryType = Show-SelectionMenu -Title "Select Discovery Type" -Options $availableTypes
+            $script:DiscoveryType = Show-SelectionMenu -Title "Select Source Environment" `
+                -Options @('VMware', 'HyperV', 'Physical') -DefaultOption 'VMware'
         }
         else {
             Write-Log -Message "DiscoveryType parameter is required in non-interactive mode" -Level Error
@@ -897,7 +1027,33 @@ Documentation:
         }
     }
     
-    Write-Log -Message "Selected Discovery Type: $($script:DiscoveryType)" -Level Info
+    Write-Log -Message "Selected Source Environment: $($script:DiscoveryType)" -Level Info
+    
+    # --- Step 3: Migration Approach (only ask for VMware) ---
+    if ([string]::IsNullOrWhiteSpace($script:MigrationApproach)) {
+        switch ($script:DiscoveryType) {
+            'VMware' {
+                if ($InteractiveMode) {
+                    $script:MigrationApproach = Show-SelectionMenu -Title "Select Migration Approach" `
+                        -Options @('Agentless', 'AgentBased') -DefaultOption 'Agentless'
+                }
+                else {
+                    Write-Log -Message "MigrationApproach parameter is required for VMware in non-interactive mode" -Level Error
+                    throw "MigrationApproach parameter is required for VMware"
+                }
+            }
+            'HyperV' {
+                $script:MigrationApproach = 'Agentless'
+                Write-Log -Message "Hyper-V automatically uses Agentless migration" -Level Info
+            }
+            'Physical' {
+                $script:MigrationApproach = 'AgentBased'
+                Write-Log -Message "Physical/AWS/GCP automatically uses Agent-Based migration" -Level Info
+            }
+        }
+    }
+    
+    Write-Log -Message "Selected Migration Approach: $($script:MigrationApproach)" -Level Info
     
     # Validate combination
     if ($script:MigrationApproach -eq 'Agentless' -and $script:DiscoveryType -eq 'Physical') {
@@ -908,24 +1064,96 @@ Documentation:
         throw "Invalid migration configuration"
     }
     
-    if ($script:MigrationApproach -eq 'AgentBased' -and $script:DiscoveryType -ne 'Physical') {
-        Write-Log -Message "Invalid combination: Agent-Based migration is designed for Physical servers" -Level Warning
-        Add-CheckResult -Category "Configuration" -CheckName "Migration Configuration" -Status "Warning" `
-            -Details "Agent-Based migration is typically used for Physical servers, but can be used for other scenarios" `
-            -Recommendation "Consider using Agentless migration for VMware/Hyper-V for better efficiency"
-    }
-    
     Add-CheckResult -Category "Configuration" -CheckName "Migration Configuration" -Status "Pass" `
-        -Details "Approach: $($script:MigrationApproach), Type: $($script:DiscoveryType)"
+        -Details "Source: $($script:DiscoveryType), Approach: $($script:MigrationApproach)"
     
-    # Get Cloud Type
-    if ($InteractiveMode -and -not $PSBoundParameters.ContainsKey('CloudType')) {
-        $script:CloudType = Show-SelectionMenu -Title "Select Azure Cloud Environment" `
-            -Options @('Public', 'Government') -DefaultOption 'Public'
+    # --- Step 4: Endpoint Type ---
+    if ($InteractiveMode -and -not $PSBoundParameters.ContainsKey('EndpointType')) {
+        $script:EndpointType = Show-SelectionMenu -Title "Select Endpoint Type" `
+            -Options @('Public', 'Private') -DefaultOption 'Public'
     }
-    Write-Log -Message "Selected Cloud Type: $($script:CloudType)" -Level Info
+    Write-Log -Message "Selected Endpoint Type: $($script:EndpointType)" -Level Info
     
-    # If Physical servers, get CSV file
+    # --- Step 5: URL Testing Mode (only for Public endpoints) ---
+    if ($script:EndpointType -eq 'Public') {
+        if ([string]::IsNullOrWhiteSpace($script:UrlTestMode)) {
+            if ($InteractiveMode) {
+                Write-Host "`n--- URL Testing Mode ---" -ForegroundColor Cyan
+                Write-Host "  Wildcard  : Tests generic wildcard domains via DNS (e.g., *.vault.azure.net)" -ForegroundColor Gray
+                Write-Host "              Uses hardcoded endpoint list. No CSV needed." -ForegroundColor Gray
+                Write-Host "  Absolute  : Tests exact region-specific URLs from a CSV file" -ForegroundColor Gray
+                Write-Host "              More precise. Requires the URL CSV file." -ForegroundColor Gray
+                
+                $script:UrlTestMode = Show-SelectionMenu -Title "Select URL Testing Mode" `
+                    -Options @('Wildcard', 'Absolute') -DefaultOption 'Wildcard'
+            }
+            else {
+                $script:UrlTestMode = 'Wildcard'
+                Write-Log -Message "Defaulting to Wildcard URL testing mode in non-interactive mode" -Level Info
+            }
+        }
+        
+        Write-Log -Message "Selected URL Testing Mode: $($script:UrlTestMode)" -Level Info
+        
+        # --- Step 5a: Region selection (for Absolute mode) ---
+        if ($script:UrlTestMode -eq 'Absolute') {
+            # Validate CSV file exists
+            if (-not (Test-Path $script:CsvPath)) {
+                Write-Log -Message "CSV file not found at: $($script:CsvPath)" -Level Error
+                throw "CSV file required for Absolute URL testing mode. File not found: $($script:CsvPath)"
+            }
+            
+            if ([string]::IsNullOrWhiteSpace($script:AzureRegion)) {
+                if ($InteractiveMode) {
+                    $availableRegions = Get-AvailableRegions -CsvFilePath $script:CsvPath
+                    
+                    if ($availableRegions.Count -eq 0) {
+                        throw "No regions found in CSV file: $($script:CsvPath)"
+                    }
+                    
+                    $regionDisplays = $availableRegions | ForEach-Object { $_.Display }
+                    $selectedDisplay = Show-SelectionMenu -Title "Select Azure Region" -Options $regionDisplays
+                    
+                    # Extract the code from the selected display string
+                    $script:AzureRegion = ($availableRegions | Where-Object { $_.Display -eq $selectedDisplay }).Code
+                }
+                else {
+                    Write-Log -Message "AzureRegion parameter is required for Absolute URL testing in non-interactive mode" -Level Error
+                    throw "AzureRegion parameter is required for Absolute URL testing mode"
+                }
+            }
+            
+            Write-Log -Message "Selected Azure Region: $($script:AzureRegion)" -Level Info
+            
+            # Map discovery type to CSV fabric column values
+            $fabricTypes = @('Common to all fabrics')
+            switch ($script:DiscoveryType) {
+                'VMware'   { $fabricTypes += 'VMWare' }
+                'HyperV'   { $fabricTypes += 'Hyper-V' }
+                'Physical' { $fabricTypes += 'Physical' }
+            }
+            
+            # Import and cache the CSV URLs
+            $script:CsvUrlEntries = @(Import-UrlCsv -CsvFilePath $script:CsvPath -Region $script:AzureRegion -FabricTypes $fabricTypes)
+            
+            Add-CheckResult -Category "Configuration" -CheckName "URL Source" -Status "Pass" `
+                -Details "Absolute mode: $($script:CsvUrlEntries.Count) URLs loaded for region $($script:AzureRegion) ($($fabricTypes -join ', '))"
+        }
+        
+        # --- Step 5b: Cloud type (for Wildcard mode) ---
+        if ($script:UrlTestMode -eq 'Wildcard') {
+            if ($InteractiveMode -and -not $PSBoundParameters.ContainsKey('CloudType')) {
+                $script:CloudType = Show-SelectionMenu -Title "Select Azure Cloud Environment" `
+                    -Options @('Public', 'Government') -DefaultOption 'Public'
+            }
+            Write-Log -Message "Selected Cloud Type: $($script:CloudType)" -Level Info
+            
+            Add-CheckResult -Category "Configuration" -CheckName "URL Source" -Status "Pass" `
+                -Details "Wildcard mode: Using $($script:CloudType) cloud endpoint list"
+        }
+    }
+    
+    # --- Step 6: Physical servers CSV ---
     if ($script:DiscoveryType -eq 'Physical') {
         Get-PhysicalServersConfig
     }
@@ -1071,19 +1299,7 @@ function Test-NetworkConnectivity {
     Write-Host "========================================`n" -ForegroundColor Cyan
     
     Write-Log -Message "Starting network connectivity checks..." -Level Info
-    
-    # Get endpoint type if not specified
-    if ([string]::IsNullOrWhiteSpace($script:EndpointType)) {
-        if ($InteractiveMode) {
-            $script:EndpointType = Show-SelectionMenu -Title "Select Endpoint Type" `
-                -Options @('Public', 'Private') -DefaultOption 'Public'
-        }
-        else {
-            $script:EndpointType = 'Public'
-        }
-    }
-    
-    Write-Log -Message "Testing connectivity for $($script:EndpointType) endpoints" -Level Info
+    Write-Log -Message "Endpoint Type: $($script:EndpointType), URL Test Mode: $($script:UrlTestMode)" -Level Info
     
     if ($script:EndpointType -eq 'Public') {
         Test-PublicEndpoints
@@ -1099,25 +1315,117 @@ function Test-NetworkConnectivity {
 function Test-PublicEndpoints {
     <#
     .SYNOPSIS
-        Tests connectivity to Azure public endpoints
+        Tests connectivity to Azure public endpoints. Branches on UrlTestMode:
+        - Wildcard: Uses hardcoded HTTP endpoints + wildcard DNS verification (original behavior)
+        - Absolute: Tests exact region-specific URLs loaded from CSV
     #>
-    Write-Log -Message "Testing connectivity to Azure Public Endpoints..." -Level Info
+    Write-Log -Message "Testing connectivity to Azure Public Endpoints (Mode: $($script:UrlTestMode))..." -Level Info
     
+    if ($script:UrlTestMode -eq 'Absolute') {
+        Test-AbsoluteEndpoints
+    }
+    else {
+        Test-WildcardEndpoints
+    }
+}
+
+function Test-AbsoluteEndpoints {
+    <#
+    .SYNOPSIS
+        Tests connectivity to absolute region-specific URLs from the CSV file
+    #>
+    Write-Log -Message "Testing $($script:CsvUrlEntries.Count) absolute URLs for region $($script:AzureRegion)..." -Level Info
+    
+    $totalChecks = 0
+    $passedChecks = 0
+    $failedChecks = 0
+    $totalUrls = $script:CsvUrlEntries.Count
+    
+    Write-Host "`n--- Absolute URL Connectivity Tests (Region: $($script:AzureRegion)) ---`n" -ForegroundColor Cyan
+    
+    foreach ($entry in $script:CsvUrlEntries) {
+        $totalChecks++
+        $url = "https://$($entry.URL)"
+        
+        Write-Progress-Status -Activity "Network Connectivity" `
+            -Status "Testing $($entry.URL)..." `
+            -PercentComplete (($totalChecks / $totalUrls) * 100)
+        
+        $result = Test-URLConnectivity -URL $url
+        
+        if ($result.Success) {
+            Write-Log -Message "[PASS] $($entry.URL) - Accessible (Response: $($result.StatusCode), Time: $($result.ResponseTime)ms) [$($entry.Fabric)]" -Level Success
+            $passedChecks++
+        }
+        else {
+            # HTTP failed — fall back to DNS verification.
+            # Many Azure Migrate service endpoints (discoverysrv, asmsrv) don't have an HTTP
+            # listener and will time out, but are reachable if DNS resolves.
+            # Wildcard URLs (with *) also need DNS fallback.
+            $dnsResult = Test-WildcardDomainDns -Domain $entry.URL
+            if ($dnsResult.Success) {
+                Write-Log -Message "[PASS] $($entry.URL) - DNS verified: $($dnsResult.Message) (HTTP failed: $($result.ErrorMessage)) [$($entry.Fabric)]" -Level Success
+                $passedChecks++
+            }
+            else {
+                Write-Log -Message "[FAIL] $($entry.URL) - Not accessible (HTTP: $($result.ErrorMessage), DNS: $($dnsResult.Message)) [$($entry.Fabric)]" -Level Error
+                $failedChecks++
+            }
+        }
+    }
+    
+    Write-Progress -Activity "Network Connectivity" -Completed
+    
+    if ($failedChecks -eq 0) {
+        Add-CheckResult -Category "Network" -CheckName "Absolute URL Connectivity" -Status "Pass" `
+            -Details "All $totalChecks URLs for region $($script:AzureRegion) are accessible"
+    }
+    elseif ($passedChecks -gt 0) {
+        Add-CheckResult -Category "Network" -CheckName "Absolute URL Connectivity" -Status "Warning" `
+            -Details "$passedChecks/$totalChecks URLs accessible, $failedChecks failed (Region: $($script:AzureRegion))" `
+            -Recommendation "Review firewall rules for failed endpoints. See https://learn.microsoft.com/azure/migrate/migrate-appliance#url-access"
+    }
+    else {
+        Add-CheckResult -Category "Network" -CheckName "Absolute URL Connectivity" -Status "Fail" `
+            -Details "None of the $totalChecks URLs for region $($script:AzureRegion) are accessible" `
+            -Recommendation "Check internet connectivity, proxy settings, and firewall rules."
+    }
+}
+
+function Test-WildcardEndpoints {
+    <#
+    .SYNOPSIS
+        Tests connectivity using hardcoded HTTP endpoints + wildcard DNS verification (original v2.0 behavior)
+    #>
     # Try to fetch latest URLs from Microsoft Learn
     $urlList = Get-AzureEndpointURLs
+    $wildcardList = Get-AzureWildcardDomains
     
     $totalChecks = 0
     $passedChecks = 0
     $failedChecks = 0
     
+    # Deduplicate URLs across categories
+    $testedUrls = @{}
+    
+    # --- HTTP endpoint tests ---
+    Write-Host "`n--- HTTP Endpoint Connectivity Tests ---`n" -ForegroundColor Cyan
+    
     foreach ($category in $urlList.Keys) {
         Write-Host "`n--- Testing $category URLs ---`n" -ForegroundColor Yellow
         
         foreach ($url in $urlList[$category]) {
+            # Skip if already tested (dedup across categories)
+            if ($testedUrls.ContainsKey($url)) {
+                Write-Log -Message "[SKIP] $url - Already tested in $($testedUrls[$url])" -Level Info
+                continue
+            }
+            $testedUrls[$url] = $category
+            
             $totalChecks++
             Write-Progress-Status -Activity "Network Connectivity" `
                 -Status "Testing $url..." `
-                -PercentComplete ($totalChecks / ($urlList.Values.Count * 3) * 100)
+                -PercentComplete (($totalChecks / (($urlList.Values | ForEach-Object { $_.Count } | Measure-Object -Sum).Sum + ($wildcardList.Values | ForEach-Object { $_.Count } | Measure-Object -Sum).Sum)) * 100)
             
             $result = Test-URLConnectivity -URL $url
             
@@ -1132,21 +1440,71 @@ function Test-PublicEndpoints {
         }
     }
     
+    # --- Wildcard domain DNS verification ---
+    $wildcardTotal = 0
+    $wildcardPassed = 0
+    $wildcardFailed = 0
+    
+    if ($wildcardList -and $wildcardList.Count -gt 0) {
+        Write-Host "`n--- Wildcard Domain DNS Verification ---" -ForegroundColor Cyan
+        Write-Host "    (These domains require *.domain firewall rules; tested via DNS)" -ForegroundColor Gray
+        
+        foreach ($category in $wildcardList.Keys) {
+            Write-Host "`n--- Verifying $category Domains ---`n" -ForegroundColor Yellow
+            
+            foreach ($domain in $wildcardList[$category]) {
+                $wildcardTotal++
+                $totalChecks++
+                
+                $dnsResult = Test-WildcardDomainDns -Domain $domain
+                
+                if ($dnsResult.Success) {
+                    Write-Log -Message "[PASS] $domain - $($dnsResult.Message)" -Level Success
+                    $wildcardPassed++
+                    $passedChecks++
+                }
+                else {
+                    Write-Log -Message "[INFO] $domain - $($dnsResult.Message)" -Level Warning
+                    $wildcardFailed++
+                    # Wildcard DNS failures are warnings, not hard failures
+                }
+            }
+        }
+    }
+    
     Write-Progress -Activity "Network Connectivity" -Completed
     
-    if ($failedChecks -eq 0) {
+    # Report HTTP endpoint results
+    $httpTotal = $totalChecks - $wildcardTotal
+    $httpPassed = $passedChecks - $wildcardPassed
+    $httpFailed = $failedChecks
+    
+    if ($httpFailed -eq 0) {
         Add-CheckResult -Category "Network" -CheckName "Public Endpoints Connectivity" -Status "Pass" `
-            -Details "All $totalChecks Azure public endpoints are accessible"
+            -Details "All $httpTotal HTTP-testable Azure endpoints are accessible"
     }
-    elseif ($passedChecks -gt 0) {
+    elseif ($httpPassed -gt 0) {
         Add-CheckResult -Category "Network" -CheckName "Public Endpoints Connectivity" -Status "Warning" `
-            -Details "$passedChecks/$totalChecks endpoints accessible, $failedChecks failed" `
+            -Details "$httpPassed/$httpTotal HTTP endpoints accessible, $httpFailed failed" `
             -Recommendation "Review firewall rules and proxy configuration for failed endpoints. See https://learn.microsoft.com/azure/migrate/migrate-appliance#url-access"
     }
     else {
         Add-CheckResult -Category "Network" -CheckName "Public Endpoints Connectivity" -Status "Fail" `
-            -Details "None of the $totalChecks Azure endpoints are accessible" `
+            -Details "None of the $httpTotal HTTP-testable Azure endpoints are accessible" `
             -Recommendation "Check internet connectivity, proxy settings, and firewall rules. The appliance requires internet access."
+    }
+    
+    # Report wildcard domain DNS results
+    if ($wildcardTotal -gt 0) {
+        if ($wildcardFailed -eq 0) {
+            Add-CheckResult -Category "Network" -CheckName "Wildcard Domain DNS" -Status "Pass" `
+                -Details "All $wildcardTotal wildcard domain DNS zones are resolvable"
+        }
+        else {
+            Add-CheckResult -Category "Network" -CheckName "Wildcard Domain DNS" -Status "Warning" `
+                -Details "$wildcardPassed/$wildcardTotal wildcard domains verified via DNS, $wildcardFailed unresolvable at base domain" `
+                -Recommendation "Wildcard domains (e.g., *.vault.azure.net) may not resolve at the base level but will work once the appliance creates specific subdomains. Ensure firewall rules allow *.domain patterns."
+        }
     }
 }
 
@@ -1216,7 +1574,7 @@ function Get-AzureEndpointURLs {
     #>
     try {
         $learnUrl = "https://learn.microsoft.com/en-us/azure/migrate/migrate-appliance"
-        $null = Invoke-WebRequest -Uri $learnUrl -TimeoutSec 5 -ErrorAction Stop
+        $null = Invoke-WebRequest -Uri $learnUrl -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
         Write-Log -Message "Successfully fetched latest endpoint information from Microsoft Learn" -Level Info
     }
     catch {
@@ -1260,25 +1618,119 @@ function Test-URLConnectivity {
         $result.ResponseTime = $stopwatch.ElapsedMilliseconds
     }
     catch {
-        $result.ErrorMessage = $_.Exception.Message
-        
-        # Some endpoints might not support HEAD, try GET
-        try {
-            $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-            $response = Invoke-WebRequest -Uri $URL -Method Get -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop
+        # Check if server responded with an HTTP error (400, 404, 417, etc.)
+        # Any HTTP response means the server IS reachable — network path works
+        if ($_.Exception -is [System.Net.WebException] -and $_.Exception.Response) {
+            $httpResponse = [System.Net.HttpWebResponse]$_.Exception.Response
             $stopwatch.Stop()
-            
             $result.Success = $true
-            $result.StatusCode = $response.StatusCode
+            $result.StatusCode = [int]$httpResponse.StatusCode
             $result.ResponseTime = $stopwatch.ElapsedMilliseconds
-            $result.ErrorMessage = $null
         }
-        catch {
+        else {
             $result.ErrorMessage = $_.Exception.Message
+            
+            # Some endpoints might not support HEAD, try GET
+            try {
+                $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+                $response = Invoke-WebRequest -Uri $URL -Method Get -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop
+                $stopwatch.Stop()
+                
+                $result.Success = $true
+                $result.StatusCode = $response.StatusCode
+                $result.ResponseTime = $stopwatch.ElapsedMilliseconds
+                $result.ErrorMessage = $null
+            }
+            catch {
+                # Check GET response for HTTP errors too
+                if ($_.Exception -is [System.Net.WebException] -and $_.Exception.Response) {
+                    $httpResponse = [System.Net.HttpWebResponse]$_.Exception.Response
+                    $stopwatch.Stop()
+                    $result.Success = $true
+                    $result.StatusCode = [int]$httpResponse.StatusCode
+                    $result.ResponseTime = $stopwatch.ElapsedMilliseconds
+                    $result.ErrorMessage = $null
+                }
+                else {
+                    $result.ErrorMessage = $_.Exception.Message
+                }
+            }
         }
     }
     
     return $result
+}
+
+function Test-WildcardDomainDns {
+    <#
+    .SYNOPSIS
+        Tests DNS resolution for wildcard domains that cannot be HTTP-tested at the base URL
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Domain
+    )
+    
+    # Strip wildcard prefix (e.g., *.vault.azure.net -> vault.azure.net)
+    $baseDomain = $Domain -replace '^\*\.', ''
+    
+    $result = @{
+        Success = $false
+        Message = $null
+    }
+    
+    # First try direct DNS A-record resolution
+    try {
+        $null = [System.Net.Dns]::GetHostAddresses($baseDomain)
+        $result.Success = $true
+        $result.Message = "DNS resolves"
+        return $result
+    }
+    catch {
+        # Base domain may not have an A record (common for wildcard-only domains like *.vault.azure.net)
+    }
+    
+    # Try DNS zone lookup (NS records) — if the zone exists, wildcard subdomains will resolve
+    try {
+        $dnsResult = Resolve-DnsName -Name $baseDomain -Type NS -DnsOnly -ErrorAction Stop
+        if ($dnsResult) {
+            $result.Success = $true
+            $result.Message = "DNS zone active (NS records found)"
+            return $result
+        }
+    }
+    catch {
+        # Resolve-DnsName may fail if no records at all
+    }
+    
+    # Try SOA record as final DNS zone existence check
+    try {
+        $dnsResult = Resolve-DnsName -Name $baseDomain -Type SOA -DnsOnly -ErrorAction Stop
+        if ($dnsResult) {
+            $result.Success = $true
+            $result.Message = "DNS zone active (SOA record found)"
+            return $result
+        }
+    }
+    catch {
+        # No DNS records found — zone may not exist or DNS is blocked
+    }
+    
+    $result.Message = "Cannot resolve $baseDomain - ensure firewall/DNS allows $Domain"
+    return $result
+}
+
+function Get-AzureWildcardDomains {
+    <#
+    .SYNOPSIS
+        Gets wildcard domain list based on CloudType
+    #>
+    if ($script:CloudType -eq 'Government') {
+        return $script:AzureGovernmentWildcardDomains
+    }
+    else {
+        return $script:AzurePublicWildcardDomains
+    }
 }
 
 # ============================================================================
@@ -1371,7 +1823,7 @@ Two Authentication Methods Available:
     Write-Log -Message "Selected authentication method: $($script:AuthMethod)" -Level Info
     
     if ($script:AuthMethod -eq 'DeviceCodeFlow') {
-        Test-DeviceCodeFlow
+        $null = Test-DeviceCodeFlow
     }
     else {
         Test-EntraIDAppAuthentication
@@ -1389,9 +1841,9 @@ function Test-DeviceCodeFlow {
 Device Code Flow Authentication Process:
 -----------------------------------------
 1. This script will generate a device code
-2. Microsoft Edge browser will open automatically
-3. You will sign in with your Azure credentials
-4. The script will monitor the authentication status
+2. A browser window will open to the Microsoft login page
+3. Enter the code shown in the terminal, then sign in with your Azure credentials
+4. The script will detect authentication completion automatically
 
 Microsoft recommends putting an exemption on Device Code Flow if it's blocked.
 For more information: https://learn.microsoft.com/azure/migrate/troubleshoot-appliance-discovery
@@ -1420,10 +1872,25 @@ For more information: https://learn.microsoft.com/azure/migrate/troubleshoot-app
         
         Write-Log -Message "Initiating Device Code Flow..." -Level Info
         Write-Host "`nInitiating Device Code Flow authentication..." -ForegroundColor Cyan
-        Write-Host "A browser window will open for authentication...`n" -ForegroundColor Yellow
+        Write-Host "A browser window will open. Copy the code shown below and enter it there.`n" -ForegroundColor Yellow
         
-        # Attempt Device Code Flow authentication
-        $context = Connect-AzAccount -UseDeviceAuthentication -ErrorAction Stop
+        # Open browser FIRST so it's ready when the device code appears
+        Start-Process "https://microsoft.com/devicelogin"
+        
+        # Connect-AzAccount emits the device code as a Warning, then blocks until auth.
+        # After auth it may emit noisy MFA / multi-subscription warnings for secondary
+        # tenants. Redirect Warning stream (3>&1) and filter: show only the device-code
+        # warning, suppress the rest.
+        $context = Connect-AzAccount -UseDeviceAuthentication -ErrorAction Stop 3>&1 | ForEach-Object {
+            if ($_ -is [System.Management.Automation.WarningRecord]) {
+                if ($_.Message -match 'devicelogin|enter the code') {
+                    Write-Warning $_.Message
+                }
+                # else: suppress MFA / subscription noise
+            } else {
+                $_   # pass the account context object through
+            }
+        }
         
         if ($context) {
             $accountId = $context.Context.Account.Id
@@ -1637,7 +2104,7 @@ function Get-AzureSubscription {
         Gets Azure subscription for the project
     #>
     try {
-        $subscriptions = Get-AzSubscription -ErrorAction Stop
+        $subscriptions = Get-AzSubscription -WarningAction SilentlyContinue -ErrorAction Stop
         
         if ($subscriptions.Count -eq 0) {
             Add-CheckResult -Category "RBAC" -CheckName "Subscription Access" -Status "Fail" `
@@ -1673,8 +2140,8 @@ function Get-AzureSubscription {
         }
         
         # Set the subscription context
-        Set-AzContext -SubscriptionId $script:SubscriptionId -ErrorAction Stop | Out-Null
-        $subName = (Get-AzSubscription -SubscriptionId $script:SubscriptionId).Name
+        Set-AzContext -SubscriptionId $script:SubscriptionId -WarningAction SilentlyContinue -ErrorAction Stop | Out-Null
+        $subName = (Get-AzSubscription -SubscriptionId $script:SubscriptionId -WarningAction SilentlyContinue).Name
         
         Write-Log -Message "Selected subscription: $subName ($($script:SubscriptionId))" -Level Success
         Add-CheckResult -Category "RBAC" -CheckName "Subscription Selection" -Status "Pass" `
@@ -1693,7 +2160,7 @@ function Get-AzureResourceGroup {
         Gets Azure resource group for the project
     #>
     try {
-        $resourceGroups = Get-AzResourceGroup -ErrorAction Stop
+        $resourceGroups = Get-AzResourceGroup -WarningAction SilentlyContinue -ErrorAction Stop
         
         if ($resourceGroups.Count -eq 0) {
             Add-CheckResult -Category "RBAC" -CheckName "Resource Group Access" -Status "Warning" `
@@ -1780,7 +2247,7 @@ function Test-ContributorRole {
         
         # Check at subscription level
         $subScope = "/subscriptions/$($script:SubscriptionId)"
-        $subRoles = Get-AzRoleAssignment -Scope $subScope -SignInName $currentUser -ErrorAction SilentlyContinue
+        $subRoles = Get-AzRoleAssignment -Scope $subScope -SignInName $currentUser -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
         
         # Check for traditional roles AND new Azure Migrate built-in roles
         $hasRequiredRole = $subRoles | Where-Object { $_.RoleDefinitionName -in $script:AzureMigrateRoles }
@@ -1789,7 +2256,7 @@ function Test-ContributorRole {
         $hasRGRole = $false
         if (-not [string]::IsNullOrWhiteSpace($script:ResourceGroupName)) {
             $rgScope = "/subscriptions/$($script:SubscriptionId)/resourceGroups/$($script:ResourceGroupName)"
-            $rgRoles = Get-AzRoleAssignment -Scope $rgScope -SignInName $currentUser -ErrorAction SilentlyContinue
+            $rgRoles = Get-AzRoleAssignment -Scope $rgScope -SignInName $currentUser -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
             $hasRGRole = $rgRoles | Where-Object { $_.RoleDefinitionName -in $script:AzureMigrateRoles }
         }
         
@@ -1853,7 +2320,7 @@ function Test-ResourceProviders {
         foreach ($provider in $script:RequiredResourceProviders) {
             Write-Progress-Status -Activity "Resource Providers" -Status "Checking $provider..."
             
-            $rp = Get-AzResourceProvider -ProviderNamespace $provider -ErrorAction SilentlyContinue
+            $rp = Get-AzResourceProvider -ProviderNamespace $provider -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
             if ($rp -and $rp.RegistrationState -eq 'Registered') {
                 $registeredCount++
             }
@@ -1953,8 +2420,10 @@ function GenerateHTMLReport {
             <p><strong>Duration:</strong> $($duration.ToString('hh\:mm\:ss'))</p>
             <p><strong>Migration Approach:</strong> $($script:MigrationApproach)</p>
             <p><strong>Discovery Type:</strong> $($script:DiscoveryType)</p>
-            <p><strong>Cloud Type:</strong> $($script:CloudType)</p>
             <p><strong>Endpoint Type:</strong> $($script:EndpointType)</p>
+            <p><strong>URL Test Mode:</strong> $($script:UrlTestMode)</p>
+            $(if ($script:UrlTestMode -eq 'Absolute') { "<p><strong>Azure Region:</strong> $($script:AzureRegion)</p>" })
+            $(if ($script:UrlTestMode -eq 'Wildcard') { "<p><strong>Cloud Type:</strong> $($script:CloudType)</p>" })
         </div>
         
         <h2>Executive Summary</h2>
@@ -2075,6 +2544,7 @@ function Main {
         Write-Log -Message "========================================" -Level Info
         Write-Log -Message "Azure Migrate Appliance Readiness Check v$script:ScriptVersion" -Level Info
         Write-Log -Message "Started at: $($script:StartTime.ToString('yyyy-MM-dd HH:mm:ss'))" -Level Info
+        Write-Log -Message "PowerShell Version: $($PSVersionTable.PSVersion)" -Level Info
         Write-Log -Message "========================================" -Level Info
         
         # Phase 1: Prerequisites
@@ -2083,14 +2553,47 @@ function Main {
         # Phase 2: Configuration
         Get-MigrationConfiguration
         
+        # Log configuration summary
+        Write-Log -Message "--- Configuration Summary ---" -Level Info
+        Write-Log -Message "  Source Environment: $($script:DiscoveryType)" -Level Info
+        Write-Log -Message "  Migration Approach: $($script:MigrationApproach)" -Level Info
+        Write-Log -Message "  Endpoint Type: $($script:EndpointType)" -Level Info
+        Write-Log -Message "  URL Test Mode: $($script:UrlTestMode)" -Level Info
+        if ($script:UrlTestMode -eq 'Absolute') {
+            Write-Log -Message "  Azure Region: $($script:AzureRegion)" -Level Info
+            Write-Log -Message "  URLs Loaded: $($script:CsvUrlEntries.Count)" -Level Info
+        }
+        if ($script:UrlTestMode -eq 'Wildcard') {
+            Write-Log -Message "  Cloud Type: $($script:CloudType)" -Level Info
+        }
+        Write-Log -Message "-----------------------------" -Level Info
+        
         # Phase 3: Network Connectivity
         Test-NetworkConnectivity
         
-        # Phase 4: Azure Authentication
-        Test-AzureAuthentication
-        
-        # Phase 5: RBAC Validation
-        Test-AzureRBAC
+        if ($script:AzModulesAvailable) {
+            # Phase 4: Azure Authentication
+            Test-AzureAuthentication
+            
+            # Phase 5: RBAC Validation
+            Test-AzureRBAC
+        }
+        else {
+            Write-Host "`n========================================" -ForegroundColor Yellow
+            Write-Host "SKIPPING AUTHENTICATION & RBAC CHECKS" -ForegroundColor Yellow
+            Write-Host "========================================" -ForegroundColor Yellow
+            Write-Host "Az PowerShell modules are not installed. A minimum report" -ForegroundColor Yellow
+            Write-Host "will be generated covering Prerequisites and Network checks." -ForegroundColor Yellow
+            Write-Log -Message "Az modules not available - skipping Authentication and RBAC phases" -Level Warning
+            
+            Add-CheckResult -Category "Authentication" -CheckName "Azure Authentication" -Status "Info" `
+                -Details "Skipped - Az.Accounts module is not installed" `
+                -Recommendation "Install Az modules to enable authentication checks: Install-Module -Name Az.Accounts,Az.Resources -Repository PSGallery -Force"
+            
+            Add-CheckResult -Category "RBAC" -CheckName "Azure RBAC" -Status "Info" `
+                -Details "Skipped - Az.Resources module is not installed" `
+                -Recommendation "Install Az modules to enable RBAC checks: Install-Module -Name Az.Accounts,Az.Resources -Repository PSGallery -Force"
+        }
         
         # Phase 6: Generate Report
         GenerateHTMLReport
@@ -2110,11 +2613,11 @@ function Main {
         Write-Host "Report File: $ReportPath`n" -ForegroundColor Cyan
         
         if ($script:ErrorCount -gt 0) {
-            Write-Host "⚠ Critical issues found. Review the report for details." -ForegroundColor Red
+            Write-Host "[!] Critical issues found. Review the report for details." -ForegroundColor Red
             exit 1
         }
         elseif ($script:WarningCount -gt 0) {
-            Write-Host "⚠ Warnings found. Review the report for recommendations." -ForegroundColor Yellow
+            Write-Host "[!] Warnings found. Review the report for recommendations." -ForegroundColor Yellow
             exit 0
         }
         else {

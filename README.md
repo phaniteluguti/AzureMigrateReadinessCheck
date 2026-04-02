@@ -51,6 +51,7 @@ These issues typically surface **mid-deployment or after**, causing delays, roll
 | **[License](LICENSE)** | 📄 MIT License details |
 | **[This README](#)** | 📖 Complete reference documentation |
 | **[Sample CSV](PhysicalServersExample.csv)** | 📊 Template for physical servers connectivity testing |
+| **[URL CSV](MigrateAppliance_ListofURLs_v3.0_combined.csv)** | 🌐 Region-specific absolute URLs for network testing |
 
 ---
 
@@ -72,10 +73,10 @@ The script will interactively guide you through all options!
 ### What It Validates:
 
 - ✅ **Prerequisites**: PowerShell version, execution policy, OS version, hardware requirements, FIPS mode, time sync
-- ✅ **Network Connectivity**: Azure public/private/government cloud endpoints, discovery-type base ports
+- ✅ **Network Connectivity**: Two URL testing modes — Wildcard (DNS) or Absolute (region-specific CSV)
 - ✅ **Azure Authentication**: Device Code Flow and Entra ID App Registration methods
 - ✅ **RBAC Validation**: Subscription and resource group permissions, Azure Migrate roles, resource providers
-- ✅ **Migration Configuration**: Agentless (VMware, Hyper-V) and Agent-based (Physical servers)
+- ✅ **Migration Configuration**: Agentless (VMware, Hyper-V) and Agent-based (Physical/AWS/GCP servers)
 - ✅ **Physical Servers**: CSV-based connectivity validation
 - ✅ **Comprehensive Reporting**: HTML report with detailed findings and recommendations
 
@@ -123,7 +124,8 @@ The script will interactively guide you through all options!
    ```powershell
    .\AzureMigrateApplianceReadinessCheck.ps1
    ```
-   - Accept the information popup
+   - Review the welcome banner
+   - Select source environment, endpoint type, and URL testing mode
    - Follow the prompts (takes 5-10 minutes)
    - Sign in to Azure when asked
 
@@ -150,12 +152,21 @@ The script will interactively guide you through all options!
 flowchart TD
     A[📥 Start: Download Script] --> B[📖 Read QUICKSTART.md]
     B --> C[💻 Run Script Interactively]
-    C --> D{Accept Info Popup?}
-    D -->|Yes| E[⚙️ Configure Options]
-    D -->|No| Z[❌ Exit]
-    E --> F[Select Migration Approach]
-    F --> G[Select Discovery Type]
-    G --> H[🌐 Network Connectivity Tests]
+    C --> D[📢 Welcome Banner]
+    D --> E[Select Source Environment]
+    E --> F{VMware?}
+    F -->|Yes| F1[Select Migration Approach]
+    F -->|No| F2[Auto-set Approach]
+    F1 --> G[Select Endpoint Type]
+    F2 --> G
+    G --> G1{Public?}
+    G1 -->|Yes| G2[Select URL Test Mode]
+    G1 -->|No| H[🌐 Network Connectivity Tests]
+    G2 -->|Absolute| G3[Select Azure Region from CSV]
+    G2 -->|Wildcard| G4[Select Cloud Type]
+    G3 --> H
+    G4 --> H
+    H --> I[Prerequisite Checks]
     I --> J[🔐 Azure Authentication]
     J --> K[✅ RBAC Validation]
     K --> L[📊 Generate HTML Report]
@@ -218,18 +229,23 @@ flowchart TD
 | Parameter | Type | Required | Description | Default |
 |-----------|------|----------|-------------|---------|
 | `InteractiveMode` | Boolean | No | Run with interactive prompts | `$true` |
-| `MigrationApproach` | String | No* | 'Agentless' or 'AgentBased' | Prompted |
 | `DiscoveryType` | String | No* | 'VMware', 'HyperV', or 'Physical' | Prompted |
+| `MigrationApproach` | String | No** | 'Agentless' or 'AgentBased' | Auto-set or Prompted |
 | `EndpointType` | String | No | 'Public' or 'Private' | `Public` |
+| `UrlTestMode` | String | No | 'Wildcard' or 'Absolute' | `Wildcard` |
+| `AzureRegion` | String | No*** | Region code (e.g., 'EA', 'WUS2') | Prompted |
+| `CsvPath` | String | No | Path to absolute URL CSV file | Script directory |
+| `CloudType` | String | No | 'Public' or 'Government' (Wildcard mode only) | `Public` |
 | `AuthMethod` | String | No | 'DeviceCodeFlow' or 'EntraIDApp' | Prompted |
 | `SubscriptionId` | String | No | Azure Subscription ID | Prompted |
 | `ResourceGroupName` | String | No | Azure Resource Group name | Prompted |
 | `PhysicalServersCSV` | String | No | Path to CSV file (hostname,ip) | Prompted |
-| `CloudType` | String | No | 'Public' or 'Government' | `Public` |
 | `LogPath` | String | No | Path for log file | Script directory |
 | `ReportPath` | String | No | Path for HTML report | Script directory |
 
-*Required in non-interactive mode
+\* Required in non-interactive mode  
+\*\* Only prompted for VMware; auto-set to Agentless (Hyper-V) or AgentBased (Physical)  
+\*\*\* Required when `UrlTestMode` is 'Absolute'
 
 ---
 
@@ -330,15 +346,22 @@ Certificate-based service principal authentication.
 
 ### Public Endpoints
 
-The script tests connectivity to essential Azure services:
+The script supports two URL testing modes:
 
+**Wildcard Mode** (default): Tests generic domains via DNS and hardcoded HTTP endpoints:
 - **Authentication**: login.microsoftonline.com, *.msftauth.net
 - **Azure Portal**: portal.azure.com
 - **Management**: management.azure.com
 - **Storage**: *.blob.core.windows.net
 - **Service Bus**: *.servicebus.windows.net
-- **Key Vault**: vault.azure.net
+- **Key Vault**: *.vault.azure.net
 - **Updates**: aka.ms/*, download.microsoft.com
+
+**Absolute Mode**: Tests exact region-specific URLs from an external CSV file:
+- Reads `MigrateAppliance_ListofURLs_v3.0_combined.csv` (included in this repo)
+- Filters by your selected Azure region and discovery type
+- Tests each URL via HTTPS (with DNS fallback for wildcard entries)
+- 30 regions supported, ~27 common + 6 discovery-type-specific URLs per region
 
 ### Private Endpoints
 
@@ -389,24 +412,27 @@ Timestamped log file capturing all script actions, including:
 
 **💡 Tip:** For 20+ more examples including automation scripts, CI/CD integration, and advanced scenarios, see **[EXAMPLES.md](EXAMPLES.md)**
 
-### Scenario 1: VMware Agentless Migration
+### Scenario 1: VMware Agentless — Wildcard Mode
 
 ```powershell
 .\AzureMigrateApplianceReadinessCheck.ps1 `
-    -MigrationApproach Agentless `
     -DiscoveryType VMware `
+    -MigrationApproach Agentless `
     -EndpointType Public `
+    -UrlTestMode Wildcard `
     -AuthMethod DeviceCodeFlow `
     -SubscriptionId "12345678-1234-1234-1234-123456789012" `
     -ResourceGroupName "AzureMigrateRG"
 ```
 
-### Scenario 2: Physical Servers with Agent-Based Discovery
+### Scenario 2: Physical Servers — Absolute URL Mode
 
 ```powershell
 .\AzureMigrateApplianceReadinessCheck.ps1 `
-    -MigrationApproach AgentBased `
     -DiscoveryType Physical `
+    -EndpointType Public `
+    -UrlTestMode Absolute `
+    -AzureRegion WE `
     -PhysicalServersCSV "C:\PhysicalServers.csv" `
     -AuthMethod EntraIDApp `
     -InteractiveMode $false
@@ -418,7 +444,6 @@ Timestamped log file capturing all script actions, including:
 
 ```powershell
 .\AzureMigrateApplianceReadinessCheck.ps1 `
-    -MigrationApproach Agentless `
     -DiscoveryType HyperV `
     -EndpointType Private
 ```
@@ -523,6 +548,17 @@ For issues with:
 ---
 
 ## 📝 Version History
+
+### Version 3.0 (April 2, 2026)
+- **New interactive flow**: Welcome Banner → Source Environment → Migration Approach (VMware only) → Endpoint Type → URL Test Mode → Region/Cloud
+- **Absolute URL testing mode**: Tests exact region-specific URLs from an external CSV file (`MigrateAppliance_ListofURLs_v3.0_combined.csv`)
+- **Wildcard URL testing mode**: Retains original DNS + HTTP verification (now selectable)
+- **CSV-driven region selection**: 30 Azure regions, ~45 URLs per region filtered by discovery type
+- **Auto-set migration approach**: Hyper-V defaults to Agentless, Physical defaults to AgentBased (only VMware prompts)
+- New parameters: `-UrlTestMode`, `-AzureRegion`, `-CsvPath`
+- HTML report now shows URL Test Mode and Azure Region metadata
+- Log file includes full configuration summary after setup
+- Removed info popup; replaced with inline welcome banner
 
 ### Version 2.0 (April 2, 2026)
 - Added Government cloud (Azure Gov) URL validation
