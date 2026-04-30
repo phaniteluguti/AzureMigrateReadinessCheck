@@ -27,10 +27,12 @@ The script will guide you through:
 4. **Select Endpoint Type** - Public or Private
 5. **Select URL Testing Mode** - Wildcard (DNS) or Absolute (region-specific CSV)
 6. **Select Region** - If Absolute mode, pick your Azure region from the CSV
-7. **Network Testing** - Test connectivity to Azure endpoints
-8. **Authentication** - Sign in to Azure via browser (Device Code Flow)
-9. **Permissions Check** - Validate Contributor role and resource providers
-10. **Report Generation** - Create HTML report with all findings
+7. **Azure Migrate Region Check** - Validate that your project region supports Azure Migrate
+8. **Source Connectivity Test** *(Optional)* - Test connectivity to vCenter/ESXi, Hyper-V hosts, or Physical servers on required ports
+9. **Network Testing** - Test connectivity to Azure endpoints
+10. **Authentication** - Sign in to Azure via browser (Device Code Flow)
+11. **Permissions Check** - Validate Contributor role and resource providers
+12. **Report Generation** - Create HTML report with all findings
 
 > **Note:** Post-discovery features (Software Inventory, SQL/Web App Discovery, Dependency Analysis)
 > are configured in the appliance configuration manager after setup.

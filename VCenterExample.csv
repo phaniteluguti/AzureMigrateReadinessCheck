@@ -1,0 +1,5 @@
+hostname,ip,type
+vcenter01,10.0.1.10,vCenter
+esxi01,10.0.1.20,ESXi
+esxi02,10.0.1.21,ESXi
+esxi03,10.0.1.22,ESXi

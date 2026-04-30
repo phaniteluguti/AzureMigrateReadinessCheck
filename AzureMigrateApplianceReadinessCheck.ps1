@@ -55,7 +55,25 @@
     Azure Resource Group Name (optional, will prompt if not provided)
 
 .PARAMETER PhysicalServersCSV
-    Path to CSV file containing physical servers (hostname,ip format)
+    Path to CSV file containing physical servers (hostname,ip[,os] format). The os column is optional (Windows/Linux).
+
+.PARAMETER VCenterServersCsv
+    Path to CSV file containing vCenter/ESXi targets (hostname,ip,type format). Type = vCenter or ESXi.
+    When provided in non-interactive mode, source connectivity tests are auto-enabled.
+
+.PARAMETER HyperVHostsCsv
+    Path to CSV file containing Hyper-V hosts (hostname,ip,port format). Port = 5985 or 5986.
+    When provided in non-interactive mode, source connectivity tests are auto-enabled.
+
+.PARAMETER TestSourceConnectivity
+    Enable source infrastructure connectivity tests in non-interactive mode.
+    Requires -VCenterServersCsv or -HyperVHostsCsv to be provided for VMware/HyperV.
+
+.PARAMETER ProjectRegion
+    Azure region where the Azure Migrate project will be deployed (metadata storage).
+    If specified, the script validates that the region supports Azure Migrate.
+    In interactive mode, a selection menu is shown if this parameter is omitted.
+    This is distinct from -AzureRegion which controls URL testing.
 
 .PARAMETER LogPath
     Path for log file (default: script directory)
@@ -83,8 +101,8 @@
     File Name      : AzureMigrateApplianceReadinessCheck.ps1
     Author         : Azure Migration Team
     Prerequisite   : PowerShell 5.1 or later, Az PowerShell modules
-    Version        : 3.0
-    Date           : April 2, 2026
+    Version        : 3.1.0
+    Date           : April 29, 2026
 #>
 
 [CmdletBinding()]
@@ -132,6 +150,18 @@ param(
     [string]$PhysicalServersCSV,
     
     [Parameter(Mandatory = $false)]
+    [string]$VCenterServersCsv,
+    
+    [Parameter(Mandatory = $false)]
+    [string]$HyperVHostsCsv,
+    
+    [Parameter(Mandatory = $false)]
+    [bool]$TestSourceConnectivity = $false,
+    
+    [Parameter(Mandatory = $false)]
+    [string]$ProjectRegion,
+    
+    [Parameter(Mandatory = $false)]
     [string]$LogPath = (Join-Path $PSScriptRoot "AzureMigrateReadiness_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"),
     
     [Parameter(Mandatory = $false)]
@@ -144,7 +174,7 @@ param(
 # GLOBAL VARIABLES AND CONSTANTS
 # ============================================================================
 
-$script:ScriptVersion = "3.0"
+$script:ScriptVersion = "3.1.0"
 $script:CheckResults = @()
 $script:StartTime = Get-Date
 $script:ErrorCount = 0
@@ -154,6 +184,7 @@ $script:AzModulesAvailable = $false
 # Note: $UrlTestMode, $AzureRegion, $CsvPath are already in script scope via param block.
 # Do NOT reassign them here — it triggers ValidateSet errors when the param is empty.
 $script:CsvUrlEntries = @()
+$script:SourceTargets = @()
 
 # Azure Public Cloud URLs - HTTP-testable endpoints (server responds to HTTPS requests)
 $script:AzurePublicEndpoints = @{
@@ -256,6 +287,136 @@ $script:AzureMigrateRoles = @(
     'Azure Migrate Execute Expert'
 )
 
+# Azure Migrate supported regions for project creation (metadata storage)
+# Source: https://learn.microsoft.com/en-us/azure/migrate/migrate-support-matrix#supported-geographies
+$script:AzureMigrateSupportedRegions = @{
+    # Asia Pacific
+    'australiaeast'       = 'Australia East'
+    'australiasoutheast'  = 'Australia Southeast'
+    'centralindia'        = 'Central India'
+    'eastasia'            = 'East Asia'
+    'japaneast'           = 'Japan East'
+    'japanwest'           = 'Japan West'
+    'jioindiawest'        = 'Jio India West'
+    'koreacentral'        = 'Korea Central'
+    'indonesiacentral'    = 'Indonesia Central'
+    'malaysiawest'        = 'Malaysia West'
+    'newzealandnorth'     = 'New Zealand North'
+    'southeastasia'       = 'Southeast Asia'
+    'southindia'          = 'South India'
+    # Europe
+    'austriaeast'         = 'Austria East'
+    'belgiumcentral'      = 'Belgium Central'
+    'denmarkeast'         = 'Denmark East'
+    'francecentral'       = 'France Central'
+    'germanywestcentral'  = 'Germany West Central'
+    'italynorth'          = 'Italy North'
+    'northeurope'         = 'North Europe'
+    'norwayeast'          = 'Norway East'
+    'spaincentral'        = 'Spain Central'
+    'swedencentral'       = 'Sweden Central'
+    'switzerlandnorth'    = 'Switzerland North'
+    'uksouth'             = 'UK South'
+    'ukwest'              = 'UK West'
+    'westeurope'          = 'West Europe'
+    # Americas
+    'brazilsouth'         = 'Brazil South'
+    'canadacentral'       = 'Canada Central'
+    'canadaeast'          = 'Canada East'
+    'centralus'           = 'Central US'
+    'chilecentral'        = 'Chile Central'
+    'mexicocentral'       = 'Mexico Central'
+    'westus2'             = 'West US 2'
+    # Middle East / Africa
+    'israelcentral'       = 'Israel Central'
+    'southafricanorth'    = 'South Africa North'
+    'uaenorth'            = 'UAE North'
+    # Azure Government
+    'usgovarizona'        = 'US Gov Arizona'
+    'usgovvirginia'       = 'US Gov Virginia'
+    # Azure China (21Vianet)
+    'chinanorth2'         = 'China North 2'
+}
+
+# All Azure regions (for selection menu)
+$script:AllAzureRegions = @{
+    # Asia Pacific
+    'australiacentral'    = 'Australia Central'
+    'australiacentral2'   = 'Australia Central 2'
+    'australiaeast'       = 'Australia East'
+    'australiasoutheast'  = 'Australia Southeast'
+    'centralindia'        = 'Central India'
+    'eastasia'            = 'East Asia'
+    'indonesiacentral'    = 'Indonesia Central'
+    'japaneast'           = 'Japan East'
+    'japanwest'           = 'Japan West'
+    'jioindiacentral'     = 'Jio India Central'
+    'jioindiawest'        = 'Jio India West'
+    'koreacentral'        = 'Korea Central'
+    'koreasouth'          = 'Korea South'
+    'malaysiawest'        = 'Malaysia West'
+    'newzealandnorth'     = 'New Zealand North'
+    'southeastasia'       = 'Southeast Asia'
+    'southindia'          = 'South India'
+    'westindia'           = 'West India'
+    # Europe
+    'austriaeast'         = 'Austria East'
+    'belgiumcentral'      = 'Belgium Central'
+    'denmarkeast'         = 'Denmark East'
+    'francecentral'       = 'France Central'
+    'francesouth'         = 'France South'
+    'germanynorth'        = 'Germany North'
+    'germanywestcentral'  = 'Germany West Central'
+    'italynorth'          = 'Italy North'
+    'northeurope'         = 'North Europe'
+    'norwayeast'          = 'Norway East'
+    'norwaywest'          = 'Norway West'
+    'polandcentral'       = 'Poland Central'
+    'spaincentral'        = 'Spain Central'
+    'swedencentral'       = 'Sweden Central'
+    'switzerlandnorth'    = 'Switzerland North'
+    'switzerlandwest'     = 'Switzerland West'
+    'uksouth'             = 'UK South'
+    'ukwest'              = 'UK West'
+    'westeurope'          = 'West Europe'
+    # Americas
+    'brazilsouth'         = 'Brazil South'
+    'brazilsoutheast'     = 'Brazil Southeast'
+    'canadacentral'       = 'Canada Central'
+    'canadaeast'          = 'Canada East'
+    'centralus'           = 'Central US'
+    'chilecentral'        = 'Chile Central'
+    'eastus'              = 'East US'
+    'eastus2'             = 'East US 2'
+    'mexicocentral'       = 'Mexico Central'
+    'northcentralus'      = 'North Central US'
+    'southcentralus'      = 'South Central US'
+    'westcentralus'       = 'West Central US'
+    'westus'              = 'West US'
+    'westus2'             = 'West US 2'
+    'westus3'             = 'West US 3'
+    # Middle East / Africa
+    'israelcentral'       = 'Israel Central'
+    'qatarcentral'        = 'Qatar Central'
+    'southafricanorth'    = 'South Africa North'
+    'southafricawest'     = 'South Africa West'
+    'uaecentral'          = 'UAE Central'
+    'uaenorth'            = 'UAE North'
+    # Azure Government
+    'usgovarizona'        = 'US Gov Arizona'
+    'usgoviowa'           = 'US Gov Iowa'
+    'usgovtexas'          = 'US Gov Texas'
+    'usgovvirginia'       = 'US Gov Virginia'
+    'usdodcentral'        = 'US DoD Central'
+    'usdodeast'           = 'US DoD East'
+    # Azure China (21Vianet)
+    'chinaeast'           = 'China East'
+    'chinaeast2'          = 'China East 2'
+    'chinanorth'          = 'China North'
+    'chinanorth2'         = 'China North 2'
+    'chinanorth3'         = 'China North 3'
+}
+
 # ============================================================================
 # LOGGING FUNCTIONS
 # ============================================================================
@@ -324,7 +485,10 @@ function Add-CheckResult {
         [string]$Details = '',
         
         [Parameter(Mandatory = $false)]
-        [string]$Recommendation = ''
+        [string]$Recommendation = '',
+
+        [Parameter(Mandatory = $false)]
+        [switch]$SkipCounter
     )
     
     $result = [PSCustomObject]@{
@@ -338,11 +502,13 @@ function Add-CheckResult {
     
     $script:CheckResults += $result
     
-    # Update counters
-    switch ($Status) {
-        'Pass'    { $script:SuccessCount++ }
-        'Fail'    { $script:ErrorCount++ }
-        'Warning' { $script:WarningCount++ }
+    # Update counters (skip for summary/roll-up items to avoid double-counting)
+    if (-not $SkipCounter) {
+        switch ($Status) {
+            'Pass'    { $script:SuccessCount++ }
+            'Fail'    { $script:ErrorCount++ }
+            'Warning' { $script:WarningCount++ }
+        }
     }
     
     # Log the result
@@ -1157,6 +1323,447 @@ Documentation:
     if ($script:DiscoveryType -eq 'Physical') {
         Get-PhysicalServersConfig
     }
+    
+    # --- Step 7: Azure Migrate Project Region Availability ---
+    Get-ProjectRegionConfig
+
+    # --- Step 8: Source Infrastructure Connectivity (optional) ---
+    Get-SourceConnectivityConfig
+}
+
+# ============================================================================
+# AZURE MIGRATE PROJECT REGION AVAILABILITY
+# ============================================================================
+
+function Get-ProjectRegionConfig {
+    <#
+    .SYNOPSIS
+        Shows all Azure regions for selection, then validates whether the chosen
+        region supports Azure Migrate project creation.
+    #>
+    [CmdletBinding()]
+    param()
+
+    Write-Host "`n--- Azure Migrate Project Region Check ---" -ForegroundColor Cyan
+
+    # Filter regions by cloud type
+    if ($script:CloudType -eq 'Government') {
+        $allRegions = $script:AllAzureRegions.Keys | Where-Object {
+            $_ -match '^(usgov|usdod)'
+        } | Sort-Object
+    } else {
+        $allRegions = $script:AllAzureRegions.Keys | Where-Object {
+            $_ -notmatch '^(usgov|usdod|china)'
+        } | Sort-Object
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($ProjectRegion)) {
+        $selectedRegion = $ProjectRegion.ToLower().Trim()
+    } elseif ($InteractiveMode) {
+        Write-Host "`nAzure regions ($($script:CloudType) cloud):" -ForegroundColor Gray
+        for ($i = 0; $i -lt $allRegions.Count; $i++) {
+            $region = $allRegions[$i]
+            $displayName = $script:AllAzureRegions[$region]
+            Write-Host "  $($i + 1).".PadRight(6) -NoNewline
+            Write-Host "$region ($displayName)"
+        }
+
+        do {
+            Write-Host "`nEnter region number (1-$($allRegions.Count)) or region name: " -NoNewline -ForegroundColor Yellow
+            $regionInput = Read-Host
+
+            if ([string]::IsNullOrWhiteSpace($regionInput)) {
+                Write-Host "A region selection is required." -ForegroundColor Red
+                continue
+            }
+
+            $choiceNum = 0
+            if ([int]::TryParse($regionInput, [ref]$choiceNum) -and $choiceNum -ge 1 -and $choiceNum -le $allRegions.Count) {
+                $selectedRegion = $allRegions[$choiceNum - 1]
+                break
+            }
+
+            # Try matching by name
+            $normalized = $regionInput.ToLower().Trim()
+            if ($script:AllAzureRegions.ContainsKey($normalized)) {
+                $selectedRegion = $normalized
+                break
+            }
+
+            Write-Host "Invalid selection. Please try again." -ForegroundColor Red
+        } while ($true)
+    } else {
+        Write-Log -Message "ProjectRegion parameter is recommended for region availability validation" -Level Warning
+        Add-CheckResult -Category "Configuration" -CheckName "Azure Migrate Region Availability" -Status "Warning" `
+            -Details "No ProjectRegion specified; skipping region availability check" `
+            -Recommendation "Use -ProjectRegion to validate your target region supports Azure Migrate"
+        return
+    }
+
+    Write-Log -Message "Checking Azure Migrate support for region: $selectedRegion" -Level Info
+
+    Test-AzureMigrateRegion -Region $selectedRegion
+}
+
+function Test-AzureMigrateRegion {
+    <#
+    .SYNOPSIS
+        Tests whether the specified Azure region supports Azure Migrate project creation.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Region
+    )
+
+    $regionLower = $Region.ToLower().Trim()
+
+    if ($script:AzureMigrateSupportedRegions.ContainsKey($regionLower)) {
+        $displayName = $script:AzureMigrateSupportedRegions[$regionLower]
+        Add-CheckResult -Category "Configuration" -CheckName "Azure Migrate Region Availability" -Status "Pass" `
+            -Details "Region '$displayName' ($regionLower) supports Azure Migrate project creation"
+    } else {
+        # Find nearest regions in the same geography hint
+        $allRegions = $script:AzureMigrateSupportedRegions.Keys | Sort-Object
+        $suggestions = ($allRegions | Select-Object -First 5) -join ', '
+
+        Write-Log -Message "Region '$regionLower' is not a supported Azure Migrate project region" -Level Error
+        Add-CheckResult -Category "Configuration" -CheckName "Azure Migrate Region Availability" -Status "Fail" `
+            -Details "Region '$regionLower' is not supported for Azure Migrate project creation" `
+            -Recommendation "Choose a supported region. Examples: $suggestions. See https://learn.microsoft.com/en-us/azure/migrate/migrate-support-matrix#supported-geographies"
+    }
+}
+
+# ============================================================================
+# SOURCE INFRASTRUCTURE CONNECTIVITY CONFIGURATION
+# ============================================================================
+
+function Get-SourceConnectivityConfig {
+    <#
+    .SYNOPSIS
+        Optionally collects source infrastructure targets (vCenter/ESXi, Hyper-V hosts)
+        for connectivity testing. Physical servers are handled by Get-PhysicalServersConfig.
+    #>
+    [CmdletBinding()]
+    param()
+    
+    # Non-interactive: auto-enable if CSV params provided
+    $autoEnabled = (-not [string]::IsNullOrWhiteSpace($VCenterServersCsv)) -or
+                   (-not [string]::IsNullOrWhiteSpace($HyperVHostsCsv)) -or
+                   $TestSourceConnectivity
+    
+    if ($InteractiveMode) {
+        Write-Host "`n--- Source Infrastructure Connectivity Test (Optional) ---`n" -ForegroundColor Yellow
+        Write-Host "You can optionally test connectivity from this appliance to your" -ForegroundColor Gray
+        Write-Host "source infrastructure (vCenter, ESXi hosts, Hyper-V hosts)." -ForegroundColor Gray
+        Write-Host ""
+        
+        $response = Read-Host "Would you like to test connectivity to your source infrastructure? (Y/N, default: N)"
+        if ($response -notmatch '^[Yy]') {
+            Write-Log -Message "User skipped source infrastructure connectivity test" -Level Info
+            Add-CheckResult -Category "Configuration" -CheckName "Source Connectivity Test" -Status "Info" `
+                -Details "Source infrastructure connectivity test was skipped by user"
+            return
+        }
+    }
+    elseif (-not $autoEnabled) {
+        return
+    }
+    
+    switch ($script:DiscoveryType) {
+        'VMware'  { Get-VMwareSourceTargets }
+        'HyperV'  { Get-HyperVSourceTargets }
+        'Physical' {
+            # Physical servers already collected via Get-PhysicalServersConfig
+            Write-Log -Message "Physical server targets already configured via CSV" -Level Info
+        }
+    }
+    
+    if ($script:SourceTargets.Count -gt 0) {
+        Write-Log -Message "Collected $($script:SourceTargets.Count) source target(s) for connectivity testing" -Level Info
+        Add-CheckResult -Category "Configuration" -CheckName "Source Connectivity Test" -Status "Pass" `
+            -Details "Configured $($script:SourceTargets.Count) source target(s) for connectivity testing"
+    }
+}
+
+function Get-VMwareSourceTargets {
+    <#
+    .SYNOPSIS
+        Collects vCenter and optionally ESXi host targets for VMware connectivity testing
+    #>
+    [CmdletBinding()]
+    param()
+    
+    if ($InteractiveMode -and [string]::IsNullOrWhiteSpace($VCenterServersCsv)) {
+        Write-Host "`n--- VMware Source Targets ---`n" -ForegroundColor Yellow
+        Write-Host "Provide vCenter Server address, or a CSV file path for bulk input." -ForegroundColor Gray
+        Write-Host "CSV format: hostname,ip,type (type = vCenter or ESXi)" -ForegroundColor Gray
+        Write-Host "Prefix with 'csv:' to provide a CSV file (e.g., csv:C:\targets.csv)`n" -ForegroundColor Gray
+        
+        $input = Read-Host "Enter vCenter IP/hostname or csv:<path>"
+        
+        if ([string]::IsNullOrWhiteSpace($input)) {
+            Write-Log -Message "No vCenter target provided" -Level Warning
+            return
+        }
+        
+        if ($input -match '^csv:(.+)$') {
+            $csvPath = $Matches[1].Trim()
+            $csvTargets = Import-SourceTargetsCsv -CsvPath $csvPath -ExpectedColumns @('hostname', 'ip', 'type') -TargetType 'VMware'
+            if ($csvTargets) {
+                foreach ($target in $csvTargets) {
+                    $targetType = if ($target.type -match '^(?:e|E)') { 'ESXi' } else { 'vCenter' }
+                    $ports = if ($targetType -eq 'ESXi' -and $script:MigrationApproach -eq 'Agentless') { @(443, 902) } else { @(443) }
+                    $script:SourceTargets += [PSCustomObject]@{
+                        Hostname = $target.hostname
+                        IP       = $target.ip
+                        Type     = $targetType
+                        Ports    = $ports
+                    }
+                }
+            }
+            return
+        }
+        
+        # Single vCenter inline input
+        $script:SourceTargets += [PSCustomObject]@{
+            Hostname = $input
+            IP       = $input
+            Type     = 'vCenter'
+            Ports    = @(443)
+        }
+        
+        # For Agentless, offer ESXi host testing
+        if ($script:MigrationApproach -eq 'Agentless') {
+            Write-Host "`nAgentless migration requires direct access to ESXi hosts (TCP 443 + 902)." -ForegroundColor Gray
+            $esxiResponse = Read-Host "Would you like to test ESXi host connectivity? (Y/N, default: N)"
+            
+            if ($esxiResponse -match '^[Yy]') {
+                Write-Host "`nEnter ESXi host IPs/hostnames (comma-separated) or csv:<path>:" -ForegroundColor Gray
+                $esxiInput = Read-Host "ESXi hosts"
+                
+                if (-not [string]::IsNullOrWhiteSpace($esxiInput)) {
+                    if ($esxiInput -match '^csv:(.+)$') {
+                        $csvPath = $Matches[1].Trim()
+                        $csvTargets = Import-SourceTargetsCsv -CsvPath $csvPath -ExpectedColumns @('hostname', 'ip', 'type') -TargetType 'VMware'
+                        if ($csvTargets) {
+                            foreach ($target in $csvTargets) {
+                                $script:SourceTargets += [PSCustomObject]@{
+                                    Hostname = $target.hostname
+                                    IP       = $target.ip
+                                    Type     = 'ESXi'
+                                    Ports    = @(443, 902)
+                                }
+                            }
+                        }
+                    }
+                    else {
+                        $esxiHosts = $esxiInput -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
+                        foreach ($esxi in $esxiHosts) {
+                            $script:SourceTargets += [PSCustomObject]@{
+                                Hostname = $esxi
+                                IP       = $esxi
+                                Type     = 'ESXi'
+                                Ports    = @(443, 902)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        else {
+            Write-Host "`nAgent-based migration does not require direct ESXi host access - skipping." -ForegroundColor Gray
+            Write-Log -Message "Agent-based: ESXi host connectivity test not required" -Level Info
+        }
+    }
+    else {
+        # Non-interactive or CSV param provided
+        $csvPath = $VCenterServersCsv
+        if ([string]::IsNullOrWhiteSpace($csvPath)) {
+            if ($TestSourceConnectivity) {
+                Write-Log -Message "TestSourceConnectivity enabled but no VCenterServersCsv provided for VMware" -Level Warning
+                Add-CheckResult -Category "Configuration" -CheckName "Source Connectivity Test" -Status "Warning" `
+                    -Details "Source connectivity test enabled but no -VCenterServersCsv parameter provided" `
+                    -Recommendation "Provide -VCenterServersCsv parameter with path to CSV file (hostname,ip,type)"
+            }
+            return
+        }
+        
+        $csvTargets = Import-SourceTargetsCsv -CsvPath $csvPath -ExpectedColumns @('hostname', 'ip', 'type') -TargetType 'VMware'
+        if ($csvTargets) {
+            foreach ($target in $csvTargets) {
+                $targetType = if ($target.type -match '^(?:e|E)') { 'ESXi' } else { 'vCenter' }
+                $ports = if ($targetType -eq 'ESXi' -and $script:MigrationApproach -eq 'Agentless') { @(443, 902) } else { @(443) }
+                $script:SourceTargets += [PSCustomObject]@{
+                    Hostname = $target.hostname
+                    IP       = $target.ip
+                    Type     = $targetType
+                    Ports    = $ports
+                }
+            }
+        }
+    }
+}
+
+function Get-HyperVSourceTargets {
+    <#
+    .SYNOPSIS
+        Collects Hyper-V host targets for connectivity testing
+    #>
+    [CmdletBinding()]
+    param()
+    
+    if ($InteractiveMode -and [string]::IsNullOrWhiteSpace($HyperVHostsCsv)) {
+        Write-Host "`n--- Hyper-V Source Targets ---`n" -ForegroundColor Yellow
+        Write-Host "Provide Hyper-V host address, or a CSV file path for bulk input." -ForegroundColor Gray
+        Write-Host "CSV format: hostname,ip,port (port = 5985 or 5986)" -ForegroundColor Gray
+        Write-Host "Prefix with 'csv:' to provide a CSV file (e.g., csv:C:\hosts.csv)`n" -ForegroundColor Gray
+        
+        $input = Read-Host "Enter Hyper-V host IP/hostname or csv:<path>"
+        
+        if ([string]::IsNullOrWhiteSpace($input)) {
+            Write-Log -Message "No Hyper-V host target provided" -Level Warning
+            return
+        }
+        
+        if ($input -match '^csv:(.+)$') {
+            $csvPath = $Matches[1].Trim()
+            $csvTargets = Import-SourceTargetsCsv -CsvPath $csvPath -ExpectedColumns @('hostname', 'ip', 'port') -TargetType 'HyperV'
+            if ($csvTargets) {
+                foreach ($target in $csvTargets) {
+                    $port = if ($target.port -match '^\d+$') { [int]$target.port } else { 5985 }
+                    $script:SourceTargets += [PSCustomObject]@{
+                        Hostname = $target.hostname
+                        IP       = $target.ip
+                        Type     = 'HyperV'
+                        Ports    = @($port)
+                    }
+                }
+            }
+            return
+        }
+        
+        # Single host inline input
+        $portChoice = Read-Host "WinRM port for this host (5985 for HTTP / 5986 for HTTPS, default: 5985)"
+        $port = if ($portChoice -eq '5986') { 5986 } else { 5985 }
+        
+        $script:SourceTargets += [PSCustomObject]@{
+            Hostname = $input
+            IP       = $input
+            Type     = 'HyperV'
+            Ports    = @($port)
+        }
+        
+        # Offer to add more hosts
+        while ($true) {
+            $more = Read-Host "`nAdd another Hyper-V host? (Y/N, default: N)"
+            if ($more -notmatch '^[Yy]') { break }
+            
+            $nextHost = Read-Host "Enter Hyper-V host IP/hostname"
+            if ([string]::IsNullOrWhiteSpace($nextHost)) { break }
+            
+            $nextPort = Read-Host "WinRM port (5985/5986, default: 5985)"
+            $port = if ($nextPort -eq '5986') { 5986 } else { 5985 }
+            
+            $script:SourceTargets += [PSCustomObject]@{
+                Hostname = $nextHost
+                IP       = $nextHost
+                Type     = 'HyperV'
+                Ports    = @($port)
+            }
+        }
+    }
+    else {
+        # Non-interactive or CSV param provided
+        $csvPath = $HyperVHostsCsv
+        if ([string]::IsNullOrWhiteSpace($csvPath)) {
+            if ($TestSourceConnectivity) {
+                Write-Log -Message "TestSourceConnectivity enabled but no HyperVHostsCsv provided for HyperV" -Level Warning
+                Add-CheckResult -Category "Configuration" -CheckName "Source Connectivity Test" -Status "Warning" `
+                    -Details "Source connectivity test enabled but no -HyperVHostsCsv parameter provided" `
+                    -Recommendation "Provide -HyperVHostsCsv parameter with path to CSV file (hostname,ip,port)"
+            }
+            return
+        }
+        
+        $csvTargets = Import-SourceTargetsCsv -CsvPath $csvPath -ExpectedColumns @('hostname', 'ip', 'port') -TargetType 'HyperV'
+        if ($csvTargets) {
+            foreach ($target in $csvTargets) {
+                $port = if ($target.port -match '^\d+$') { [int]$target.port } else { 5985 }
+                $script:SourceTargets += [PSCustomObject]@{
+                    Hostname = $target.hostname
+                    IP       = $target.ip
+                    Type     = 'HyperV'
+                    Ports    = @($port)
+                }
+            }
+        }
+    }
+}
+
+function Import-SourceTargetsCsv {
+    <#
+    .SYNOPSIS
+        Generic CSV importer for source infrastructure targets. Validates file exists and expected columns.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CsvPath,
+        
+        [Parameter(Mandatory = $true)]
+        [string[]]$ExpectedColumns,
+        
+        [Parameter(Mandatory = $true)]
+        [string]$TargetType
+    )
+    
+    if (-not (Test-Path $CsvPath)) {
+        Write-Log -Message "Source targets CSV not found: $CsvPath" -Level Error
+        Add-CheckResult -Category "Configuration" -CheckName "Source Targets CSV ($TargetType)" -Status "Fail" `
+            -Details "CSV file not found: $CsvPath" `
+            -Recommendation "Provide a valid CSV file path"
+        return $null
+    }
+    
+    try {
+        $data = Import-Csv -Path $CsvPath -ErrorAction Stop
+        
+        if ($data.Count -eq 0) {
+            Write-Log -Message "Source targets CSV is empty: $CsvPath" -Level Warning
+            Add-CheckResult -Category "Configuration" -CheckName "Source Targets CSV ($TargetType)" -Status "Warning" `
+                -Details "CSV file is empty: $CsvPath"
+            return $null
+        }
+        
+        # Validate required columns (hostname and ip are mandatory)
+        $firstRow = $data[0]
+        $missingCols = @()
+        foreach ($col in @('hostname', 'ip')) {
+            if (-not ($firstRow.PSObject.Properties.Name -contains $col)) {
+                $missingCols += $col
+            }
+        }
+        
+        if ($missingCols.Count -gt 0) {
+            Add-CheckResult -Category "Configuration" -CheckName "Source Targets CSV ($TargetType)" -Status "Fail" `
+                -Details "CSV missing required columns: $($missingCols -join ', '). Expected: $($ExpectedColumns -join ', ')" `
+                -Recommendation "Ensure CSV has columns: $($ExpectedColumns -join ', ')"
+            return $null
+        }
+        
+        Write-Log -Message "Loaded $($data.Count) $TargetType target(s) from CSV: $CsvPath" -Level Info
+        Add-CheckResult -Category "Configuration" -CheckName "Source Targets CSV ($TargetType)" -Status "Pass" `
+            -Details "Successfully loaded $($data.Count) $TargetType target(s) from CSV"
+        
+        return $data
+    }
+    catch {
+        Add-CheckResult -Category "Configuration" -CheckName "Source Targets CSV ($TargetType)" -Status "Fail" `
+            -Details "Failed to read CSV: $($_.Exception.Message)" `
+            -Recommendation "Ensure CSV is properly formatted and accessible"
+        return $null
+    }
 }
 
 function Get-PhysicalServersConfig {
@@ -1168,7 +1775,8 @@ function Get-PhysicalServersConfig {
     
     if ([string]::IsNullOrWhiteSpace($script:PhysicalServersCSV)) {
         if ($InteractiveMode) {
-            $csvPath = Read-Host "Enter path to CSV file with physical servers (hostname,ip format) or press Enter to skip"
+            Write-Host "CSV format: hostname,ip,os (os = Windows or Linux, optional)" -ForegroundColor Gray
+            $csvPath = Read-Host "Enter path to CSV file with physical servers or press Enter to skip"
             if (-not [string]::IsNullOrWhiteSpace($csvPath)) {
                 $script:PhysicalServersCSV = $csvPath
             }
@@ -1187,12 +1795,13 @@ function Get-PhysicalServersConfig {
 function Test-PhysicalServersCSV {
     <#
     .SYNOPSIS
-        Validates and tests physical servers from CSV
+        Validates and tests physical servers from CSV. Supports optional 'os' column
+        for targeted port testing (Windows=WinRM, Linux=SSH).
     #>
     if (-not (Test-Path $script:PhysicalServersCSV)) {
         Add-CheckResult -Category "Configuration" -CheckName "Physical Servers CSV" -Status "Fail" `
             -Details "CSV file not found: $($script:PhysicalServersCSV)" `
-            -Recommendation "Provide a valid CSV file path with hostname,ip format"
+            -Recommendation "Provide a valid CSV file path with hostname,ip[,os] format"
         return
     }
     
@@ -1202,23 +1811,46 @@ function Test-PhysicalServersCSV {
         if ($servers.Count -eq 0) {
             Add-CheckResult -Category "Configuration" -CheckName "Physical Servers CSV" -Status "Warning" `
                 -Details "CSV file is empty" `
-                -Recommendation "Add servers to CSV in hostname,ip format"
+                -Recommendation "Add servers to CSV in hostname,ip[,os] format"
             return
         }
         
-        # Validate CSV format
+        # Validate CSV format - hostname and ip are required
         $firstServer = $servers[0]
         if (-not ($firstServer.PSObject.Properties.Name -contains 'hostname') -or 
             -not ($firstServer.PSObject.Properties.Name -contains 'ip')) {
             Add-CheckResult -Category "Configuration" -CheckName "Physical Servers CSV" -Status "Fail" `
-                -Details "CSV format is invalid. Expected columns: hostname,ip" `
-                -Recommendation "Ensure CSV has 'hostname' and 'ip' columns"
+                -Details "CSV format is invalid. Expected columns: hostname,ip (optional: os)" `
+                -Recommendation "Ensure CSV has 'hostname' and 'ip' columns. Optionally add 'os' column (Windows/Linux)."
             return
+        }
+        
+        $hasOsColumn = $firstServer.PSObject.Properties.Name -contains 'os'
+        
+        # If no OS column and interactive, ask per-server
+        if (-not $hasOsColumn -and $InteractiveMode) {
+            Write-Host "`nCSV does not have an 'os' column. Specify OS per server for targeted port testing." -ForegroundColor Yellow
+            Write-Host "(W = Windows/WinRM, L = Linux/SSH, A = Test all ports)`n" -ForegroundColor Gray
+            
+            foreach ($server in $servers) {
+                $osChoice = Read-Host "$($server.hostname) ($($server.ip)) - OS? (W/L/A, default: A)"
+                switch -Regex ($osChoice) {
+                    '^[Ww]' { $server | Add-Member -NotePropertyName 'os' -NotePropertyValue 'Windows' -Force }
+                    '^[Ll]' { $server | Add-Member -NotePropertyName 'os' -NotePropertyValue 'Linux' -Force }
+                    default { $server | Add-Member -NotePropertyName 'os' -NotePropertyValue 'All' -Force }
+                }
+            }
+        }
+        elseif (-not $hasOsColumn) {
+            # Non-interactive, no os column - test all ports
+            foreach ($server in $servers) {
+                $server | Add-Member -NotePropertyName 'os' -NotePropertyValue 'All' -Force
+            }
         }
         
         Write-Log -Message "Loaded $($servers.Count) physical servers from CSV" -Level Info
         Add-CheckResult -Category "Configuration" -CheckName "Physical Servers CSV" -Status "Pass" `
-            -Details "Successfully loaded $($servers.Count) physical servers from CSV"
+            -Details "Successfully loaded $($servers.Count) physical servers from CSV$(if ($hasOsColumn) { ' (with OS column)' } else { '' })"
         
         # Test connectivity to physical servers
         Test-PhysicalServersConnectivity -Servers $servers
@@ -1233,7 +1865,8 @@ function Test-PhysicalServersCSV {
 function Test-PhysicalServersConnectivity {
     <#
     .SYNOPSIS
-        Tests connectivity to physical servers
+        Tests connectivity to physical servers using TCP port tests
+        (WinRM 5985/5986 for Windows, SSH 22 for Linux)
     #>
     param(
         [Parameter(Mandatory = $true)]
@@ -1244,40 +1877,72 @@ function Test-PhysicalServersConnectivity {
     Write-Host "PHYSICAL SERVERS CONNECTIVITY CHECK" -ForegroundColor Cyan
     Write-Host "========================================`n" -ForegroundColor Cyan
     
-    $reachableCount = 0
-    $unreachableCount = 0
+    $portPassCount = 0
+    $portFailCount = 0
     
     foreach ($server in $Servers) {
+        $serverLabel = "$($server.hostname) ($($server.ip))"
         Write-Progress-Status -Activity "Testing Physical Servers" `
-            -Status "Testing connectivity to $($server.hostname) ($($server.ip))..." `
+            -Status "Testing connectivity to $serverLabel..." `
             -PercentComplete (($Servers.IndexOf($server) + 1) / $Servers.Count * 100)
         
-        $pingResult = Test-Connection -ComputerName $server.ip -Count 2 -Quiet -ErrorAction SilentlyContinue
-        
-        if ($pingResult) {
-            Write-Log -Message "Server $($server.hostname) ($($server.ip)) is reachable" -Level Success
-            $reachableCount++
+        # Determine ports to test based on OS
+        $os = if ($server.PSObject.Properties.Name -contains 'os') { $server.os } else { 'All' }
+        $portsToTest = @()
+        switch ($os) {
+            'Windows' { $portsToTest = @(5985, 5986) }
+            'Linux'   { $portsToTest = @(22) }
+            default   { $portsToTest = @(5985, 5986, 22) }
         }
-        else {
-            Write-Log -Message "Server $($server.hostname) ($($server.ip)) is NOT reachable" -Level Warning
-            $unreachableCount++
+        
+        # Port connectivity tests
+        foreach ($port in $portsToTest) {
+            $portLabel = switch ($port) {
+                5985 { 'WinRM HTTP' }
+                5986 { 'WinRM HTTPS' }
+                22   { 'SSH' }
+                default { "TCP $port" }
+            }
+            
+            try {
+                $tcpResult = Test-NetConnection -ComputerName $server.ip -Port $port -WarningAction SilentlyContinue -ErrorAction Stop
+                if ($tcpResult.TcpTestSucceeded) {
+                    Add-CheckResult -Category "Network" -CheckName "Source: $serverLabel - Port $port ($portLabel)" -Status "Pass" `
+                        -Details "Port $port ($portLabel) is open and accessible"
+                    $portPassCount++
+                }
+                else {
+                    Add-CheckResult -Category "Network" -CheckName "Source: $serverLabel - Port $port ($portLabel)" -Status "Fail" `
+                        -Details "Port $port ($portLabel) is closed or filtered" `
+                        -Recommendation "Ensure port $port is open on the target server and firewall allows traffic"
+                    $portFailCount++
+                }
+            }
+            catch {
+                Add-CheckResult -Category "Network" -CheckName "Source: $serverLabel - Port $port ($portLabel)" -Status "Fail" `
+                    -Details "Port test failed: $($_.Exception.Message)" `
+                    -Recommendation "Check network connectivity and firewall rules for port $port"
+                $portFailCount++
+            }
         }
     }
     
     Write-Progress -Activity "Testing Physical Servers" -Completed
     
-    if ($unreachableCount -eq 0) {
-        Add-CheckResult -Category "Network" -CheckName "Physical Servers Connectivity" -Status "Pass" `
-            -Details "All $reachableCount physical servers are reachable from this appliance"
+    # Summary result
+    $totalTests = $portPassCount + $portFailCount
+    if ($portFailCount -eq 0) {
+        Add-CheckResult -Category "Network" -CheckName "Physical Servers Connectivity" -Status "Pass" -SkipCounter `
+            -Details "All $totalTests port connectivity tests passed across $($Servers.Count) physical server(s)"
     }
-    elseif ($reachableCount -gt 0) {
-        Add-CheckResult -Category "Network" -CheckName "Physical Servers Connectivity" -Status "Warning" `
-            -Details "$reachableCount servers reachable, $unreachableCount servers unreachable" `
-            -Recommendation "Verify network connectivity and firewall rules for unreachable servers"
+    elseif ($portPassCount -gt 0) {
+        Add-CheckResult -Category "Network" -CheckName "Physical Servers Connectivity" -Status "Warning" -SkipCounter `
+            -Details "$portPassCount of $totalTests port tests passed across $($Servers.Count) server(s) ($portFailCount failed)" `
+            -Recommendation "Review per-server results above for failed connectivity tests"
     }
     else {
-        Add-CheckResult -Category "Network" -CheckName "Physical Servers Connectivity" -Status "Fail" `
-            -Details "None of the $($Servers.Count) physical servers are reachable" `
+        Add-CheckResult -Category "Network" -CheckName "Physical Servers Connectivity" -Status "Fail" -SkipCounter `
+            -Details "All $totalTests port connectivity tests failed for $($Servers.Count) physical server(s)" `
             -Recommendation "Check network connectivity, DNS resolution, and firewall rules"
     }
 }
@@ -1310,6 +1975,93 @@ function Test-NetworkConnectivity {
     
     # Appliance port requirements per discovery type
     Test-DiscoveryTypePorts
+    
+    # Source infrastructure connectivity (if configured)
+    if ($script:SourceTargets.Count -gt 0) {
+        Test-SourceConnectivity
+    }
+}
+
+function Test-SourceConnectivity {
+    <#
+    .SYNOPSIS
+        Tests connectivity to source infrastructure targets (vCenter, ESXi, Hyper-V hosts)
+        collected during configuration. Tests TCP port(s) per target.
+    #>
+    [CmdletBinding()]
+    param()
+    
+    Write-Host "`n========================================" -ForegroundColor Cyan
+    Write-Host "SOURCE INFRASTRUCTURE CONNECTIVITY" -ForegroundColor Cyan
+    Write-Host "========================================`n" -ForegroundColor Cyan
+    
+    Write-Log -Message "Testing connectivity to $($script:SourceTargets.Count) source target(s)..." -Level Info
+    
+    $totalPass = 0
+    $totalFail = 0
+    $index = 0
+    
+    foreach ($target in $script:SourceTargets) {
+        $index++
+        $targetLabel = "$($target.Hostname) ($($target.IP))"
+        $typeLabel = $target.Type
+        
+        Write-Progress-Status -Activity "Testing Source Connectivity" `
+            -Status "Testing $typeLabel $targetLabel..." `
+            -PercentComplete ($index / $script:SourceTargets.Count * 100)
+        
+        # TCP port tests
+        foreach ($port in $target.Ports) {
+            $portLabel = switch ($port) {
+                443  { 'HTTPS' }
+                902  { 'NFC (vMotion)' }
+                5985 { 'WinRM HTTP' }
+                5986 { 'WinRM HTTPS' }
+                22   { 'SSH' }
+                default { "TCP" }
+            }
+            
+            try {
+                $tcpResult = Test-NetConnection -ComputerName $target.IP -Port $port -WarningAction SilentlyContinue -ErrorAction Stop
+                if ($tcpResult.TcpTestSucceeded) {
+                    Add-CheckResult -Category "Network" -CheckName "Source: $typeLabel $targetLabel - Port $port ($portLabel)" -Status "Pass" `
+                        -Details "Port $port ($portLabel) is open and accessible on $typeLabel server"
+                    $totalPass++
+                }
+                else {
+                    Add-CheckResult -Category "Network" -CheckName "Source: $typeLabel $targetLabel - Port $port ($portLabel)" -Status "Fail" `
+                        -Details "Port $port ($portLabel) is closed or filtered on $typeLabel server" `
+                        -Recommendation "Ensure port $port is open on $targetLabel and firewall allows traffic from the appliance"
+                    $totalFail++
+                }
+            }
+            catch {
+                Add-CheckResult -Category "Network" -CheckName "Source: $typeLabel $targetLabel - Port $port ($portLabel)" -Status "Fail" `
+                    -Details "Port test failed: $($_.Exception.Message)" `
+                    -Recommendation "Check network connectivity and firewall rules for port $port on $targetLabel"
+                $totalFail++
+            }
+        }
+    }
+    
+    Write-Progress -Activity "Testing Source Connectivity" -Completed
+    
+    # Summary result
+    $totalTests = $totalPass + $totalFail
+    if ($totalFail -eq 0) {
+        Add-CheckResult -Category "Network" -CheckName "Source Infrastructure Connectivity" -Status "Pass" -SkipCounter `
+            -Details "All $totalTests port connectivity tests passed across $($script:SourceTargets.Count) source target(s)"
+    }
+    elseif ($totalPass -gt 0) {
+        Add-CheckResult -Category "Network" -CheckName "Source Infrastructure Connectivity" -Status "Warning" -SkipCounter `
+            -Details "$totalPass of $totalTests port tests passed across $($script:SourceTargets.Count) source target(s) ($totalFail failed)" `
+            -Recommendation "Review per-target results for failed port connectivity tests"
+    }
+    else {
+        Add-CheckResult -Category "Network" -CheckName "Source Infrastructure Connectivity" -Status "Fail" -SkipCounter `
+            -Details "All $totalTests port connectivity tests failed across $($script:SourceTargets.Count) source target(s)" `
+            -Recommendation "Check network connectivity, DNS resolution, and firewall rules to source infrastructure"
+    }
 }
 
 function Test-PublicEndpoints {
@@ -1355,6 +2107,8 @@ function Test-AbsoluteEndpoints {
         
         if ($result.Success) {
             Write-Log -Message "[PASS] $($entry.URL) - Accessible (Response: $($result.StatusCode), Time: $($result.ResponseTime)ms) [$($entry.Fabric)]" -Level Success
+            Add-CheckResult -Category "Network" -CheckName "URL: $($entry.URL)" -Status "Pass" `
+                -Details "Accessible (HTTP $($result.StatusCode), $($result.ResponseTime)ms) [$($entry.Fabric)]"
             $passedChecks++
         }
         else {
@@ -1365,10 +2119,15 @@ function Test-AbsoluteEndpoints {
             $dnsResult = Test-WildcardDomainDns -Domain $entry.URL
             if ($dnsResult.Success) {
                 Write-Log -Message "[PASS] $($entry.URL) - DNS verified: $($dnsResult.Message) (HTTP failed: $($result.ErrorMessage)) [$($entry.Fabric)]" -Level Success
+                Add-CheckResult -Category "Network" -CheckName "URL: $($entry.URL)" -Status "Pass" `
+                    -Details "DNS verified: $($dnsResult.Message) (No HTTP listener) [$($entry.Fabric)]"
                 $passedChecks++
             }
             else {
                 Write-Log -Message "[FAIL] $($entry.URL) - Not accessible (HTTP: $($result.ErrorMessage), DNS: $($dnsResult.Message)) [$($entry.Fabric)]" -Level Error
+                Add-CheckResult -Category "Network" -CheckName "URL: $($entry.URL)" -Status "Fail" `
+                    -Details "Not accessible (HTTP: $($result.ErrorMessage), DNS: $($dnsResult.Message)) [$($entry.Fabric)]" `
+                    -Recommendation "Ensure firewall/proxy allows access to $($entry.URL) on port 443"
                 $failedChecks++
             }
         }
@@ -1377,16 +2136,16 @@ function Test-AbsoluteEndpoints {
     Write-Progress -Activity "Network Connectivity" -Completed
     
     if ($failedChecks -eq 0) {
-        Add-CheckResult -Category "Network" -CheckName "Absolute URL Connectivity" -Status "Pass" `
+        Add-CheckResult -Category "Network" -CheckName "Absolute URL Connectivity" -Status "Pass" -SkipCounter `
             -Details "All $totalChecks URLs for region $($script:AzureRegion) are accessible"
     }
     elseif ($passedChecks -gt 0) {
-        Add-CheckResult -Category "Network" -CheckName "Absolute URL Connectivity" -Status "Warning" `
+        Add-CheckResult -Category "Network" -CheckName "Absolute URL Connectivity" -Status "Warning" -SkipCounter `
             -Details "$passedChecks/$totalChecks URLs accessible, $failedChecks failed (Region: $($script:AzureRegion))" `
             -Recommendation "Review firewall rules for failed endpoints. See https://learn.microsoft.com/azure/migrate/migrate-appliance#url-access"
     }
     else {
-        Add-CheckResult -Category "Network" -CheckName "Absolute URL Connectivity" -Status "Fail" `
+        Add-CheckResult -Category "Network" -CheckName "Absolute URL Connectivity" -Status "Fail" -SkipCounter `
             -Details "None of the $totalChecks URLs for region $($script:AzureRegion) are accessible" `
             -Recommendation "Check internet connectivity, proxy settings, and firewall rules."
     }
@@ -1431,10 +2190,15 @@ function Test-WildcardEndpoints {
             
             if ($result.Success) {
                 Write-Log -Message "[PASS] $url - Accessible (Response: $($result.StatusCode), Time: $($result.ResponseTime)ms)" -Level Success
+                Add-CheckResult -Category "Network" -CheckName "URL: $($url -replace 'https://', '')" -Status "Pass" `
+                    -Details "Accessible (HTTP $($result.StatusCode), $($result.ResponseTime)ms) [$category]"
                 $passedChecks++
             }
             else {
                 Write-Log -Message "[FAIL] $url - Not accessible (Error: $($result.ErrorMessage))" -Level Error
+                Add-CheckResult -Category "Network" -CheckName "URL: $($url -replace 'https://', '')" -Status "Fail" `
+                    -Details "Not accessible: $($result.ErrorMessage) [$category]" `
+                    -Recommendation "Ensure firewall/proxy allows access to $url on port 443"
                 $failedChecks++
             }
         }
@@ -1460,11 +2224,16 @@ function Test-WildcardEndpoints {
                 
                 if ($dnsResult.Success) {
                     Write-Log -Message "[PASS] $domain - $($dnsResult.Message)" -Level Success
+                    Add-CheckResult -Category "Network" -CheckName "DNS: *.$domain" -Status "Pass" `
+                        -Details "Wildcard domain resolvable: $($dnsResult.Message) [$category]"
                     $wildcardPassed++
                     $passedChecks++
                 }
                 else {
                     Write-Log -Message "[INFO] $domain - $($dnsResult.Message)" -Level Warning
+                    Add-CheckResult -Category "Network" -CheckName "DNS: *.$domain" -Status "Warning" `
+                        -Details "Base domain DNS unresolvable: $($dnsResult.Message) [$category]" `
+                        -Recommendation "Ensure firewall allows *.${domain}. Base domain may not resolve but subdomains will work."
                     $wildcardFailed++
                     # Wildcard DNS failures are warnings, not hard failures
                 }
@@ -1480,16 +2249,16 @@ function Test-WildcardEndpoints {
     $httpFailed = $failedChecks
     
     if ($httpFailed -eq 0) {
-        Add-CheckResult -Category "Network" -CheckName "Public Endpoints Connectivity" -Status "Pass" `
+        Add-CheckResult -Category "Network" -CheckName "Public Endpoints Connectivity" -Status "Pass" -SkipCounter `
             -Details "All $httpTotal HTTP-testable Azure endpoints are accessible"
     }
     elseif ($httpPassed -gt 0) {
-        Add-CheckResult -Category "Network" -CheckName "Public Endpoints Connectivity" -Status "Warning" `
+        Add-CheckResult -Category "Network" -CheckName "Public Endpoints Connectivity" -Status "Warning" -SkipCounter `
             -Details "$httpPassed/$httpTotal HTTP endpoints accessible, $httpFailed failed" `
             -Recommendation "Review firewall rules and proxy configuration for failed endpoints. See https://learn.microsoft.com/azure/migrate/migrate-appliance#url-access"
     }
     else {
-        Add-CheckResult -Category "Network" -CheckName "Public Endpoints Connectivity" -Status "Fail" `
+        Add-CheckResult -Category "Network" -CheckName "Public Endpoints Connectivity" -Status "Fail" -SkipCounter `
             -Details "None of the $httpTotal HTTP-testable Azure endpoints are accessible" `
             -Recommendation "Check internet connectivity, proxy settings, and firewall rules. The appliance requires internet access."
     }
@@ -1497,11 +2266,11 @@ function Test-WildcardEndpoints {
     # Report wildcard domain DNS results
     if ($wildcardTotal -gt 0) {
         if ($wildcardFailed -eq 0) {
-            Add-CheckResult -Category "Network" -CheckName "Wildcard Domain DNS" -Status "Pass" `
+            Add-CheckResult -Category "Network" -CheckName "Wildcard Domain DNS" -Status "Pass" -SkipCounter `
                 -Details "All $wildcardTotal wildcard domain DNS zones are resolvable"
         }
         else {
-            Add-CheckResult -Category "Network" -CheckName "Wildcard Domain DNS" -Status "Warning" `
+            Add-CheckResult -Category "Network" -CheckName "Wildcard Domain DNS" -Status "Warning" -SkipCounter `
                 -Details "$wildcardPassed/$wildcardTotal wildcard domains verified via DNS, $wildcardFailed unresolvable at base domain" `
                 -Recommendation "Wildcard domains (e.g., *.vault.azure.net) may not resolve at the base level but will work once the appliance creates specific subdomains. Ensure firewall rules allow *.domain patterns."
         }
@@ -1933,9 +2702,9 @@ function Invoke-InteractiveBrowserAuth {
 function Test-DeviceCodeFlow {
     <#
     .SYNOPSIS
-        Tests Device Code Flow authentication using a background job.
-        User can press Enter to cancel if authentication fails in the browser
-        (e.g. Conditional Access blocks the token).
+        Tests Device Code Flow authentication using async runspace.
+        Device code is displayed in real-time from the runspace Warning stream.
+        User can press Enter to cancel if authentication fails in the browser.
     #>
     Write-Log -Message "Testing Device Code Flow authentication..." -Level Info
     
@@ -1963,6 +2732,9 @@ For more information: https://learn.microsoft.com/azure/migrate/troubleshoot-app
         }
     }
     
+    $ps = $null
+    $runspace = $null
+    
     try {
         # Check if Az.Accounts module is available
         if (-not (Get-Module -ListAvailable -Name Az.Accounts)) {
@@ -1981,82 +2753,114 @@ For more information: https://learn.microsoft.com/azure/migrate/troubleshoot-app
         # Open browser FIRST so it's ready when the device code appears
         Start-Process "https://microsoft.com/devicelogin"
         
-        # Run Connect-AzAccount in a background job so the main thread stays
-        # responsive. This lets the user press Enter to cancel immediately if
-        # authentication fails in the browser (CA block, MFA denial, etc.)
-        # instead of waiting ~15 minutes for the device code to expire.
-        $job = Start-Job -ScriptBlock {
+        # Use a PowerShell runspace for async execution. Unlike Start-Job,
+        # the runspace's Streams.Warning collection is updated in real-time,
+        # so the device code (emitted as a Warning) can be displayed immediately.
+        $runspace = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+        $runspace.Open()
+        
+        $ps = [PowerShell]::Create()
+        $ps.Runspace = $runspace
+        $null = $ps.AddScript({
             Import-Module Az.Accounts -ErrorAction Stop
-            Connect-AzAccount -UseDeviceAuthentication -ErrorAction Stop -WarningAction SilentlyContinue
-        }
+            Connect-AzAccount -UseDeviceAuthentication -ErrorAction Stop
+        })
         
-        # Poll for the device code from the job's Warning stream and display it
+        $asyncResult = $ps.BeginInvoke()
+        
+        # Poll the runspace Warning stream for the device code and display it
         $codeDisplayed = $false
-        $codeCheckEnd = (Get-Date).AddSeconds(30)  # device code appears within a few seconds
+        $cancelMsgShown = $false
+        $warningsShown = 0
         
-        while (-not $codeDisplayed -and (Get-Date) -lt $codeCheckEnd -and $job.State -eq 'Running') {
-            if ($job.ChildJobs[0].Warning.Count -gt 0) {
-                foreach ($warn in $job.ChildJobs[0].Warning) {
+        while (-not $asyncResult.IsCompleted) {
+            # Display new warnings from the runspace (device code appears here)
+            while ($warningsShown -lt $ps.Streams.Warning.Count) {
+                $warn = $ps.Streams.Warning[$warningsShown]
+                if ($warn.Message -match 'devicelogin|enter the code|code\s+\w') {
                     Write-Host $warn.Message -ForegroundColor Yellow
                     $codeDisplayed = $true
                 }
+                $warningsShown++
             }
-            Start-Sleep -Milliseconds 300
-        }
-        
-        Write-Host "`n>> Waiting for authentication to complete..." -ForegroundColor Cyan
-        Write-Host ">> If authentication FAILED in the browser, press ENTER to cancel.`n" -ForegroundColor Yellow
-        
-        # Wait for either: job completes (auth success/fail) or user presses Enter (cancel)
-        while ($job.State -eq 'Running') {
-            if ([Console]::KeyAvailable) {
-                $key = [Console]::ReadKey($true)
-                if ($key.Key -eq 'Enter') {
-                    Write-Host "`nCancelling Device Code Flow..." -ForegroundColor Yellow
-                    Write-Log -Message "User cancelled Device Code Flow (pressed Enter)" -Level Warning
-                    Stop-Job -Job $job
-                    Remove-Job -Job $job -Force
-                    
-                    Add-CheckResult -Category "Authentication" -CheckName "Device Code Flow" -Status "Fail" `
-                        -Details "Device Code Flow cancelled by user. Authentication likely failed in the browser (Conditional Access, MFA denial, or policy block)." `
-                        -Recommendation "Try interactive browser authentication, or request a DCF exemption in Azure AD."
-                    
-                    return $false
+            
+            # Once device code is shown, tell user they can cancel (once only)
+            if ($codeDisplayed -and -not $cancelMsgShown) {
+                Write-Host "`n>> Waiting for authentication to complete..." -ForegroundColor Cyan
+                Write-Host ">> If authentication FAILED in the browser, press ENTER to cancel.`n" -ForegroundColor Yellow
+                $cancelMsgShown = $true
+            }
+            
+            if ($codeDisplayed) {
+                
+                # Check if user pressed Enter to cancel
+                if ([Console]::KeyAvailable) {
+                    $key = [Console]::ReadKey($true)
+                    if ($key.Key -eq 'Enter') {
+                        Write-Host "`nCancelling Device Code Flow..." -ForegroundColor Yellow
+                        Write-Log -Message "User cancelled Device Code Flow (pressed Enter)" -Level Warning
+                        $ps.Stop()
+                        $ps.Dispose()
+                        $runspace.Close()
+                        $runspace.Dispose()
+                        
+                        Add-CheckResult -Category "Authentication" -CheckName "Device Code Flow" -Status "Fail" `
+                            -Details "Device Code Flow cancelled by user. Authentication likely failed in the browser (Conditional Access, MFA denial, or policy block)." `
+                            -Recommendation "Try interactive browser authentication, or request a DCF exemption in Azure AD."
+                        
+                        return $false
+                    }
                 }
             }
+            
             Start-Sleep -Milliseconds 300
         }
         
-        # Job finished on its own — check for errors first
-        if ($job.State -eq 'Failed') {
-            $jobError = $job.ChildJobs[0].Error | Select-Object -First 1
-            $errorMessage = if ($jobError) { $jobError.ToString() } else { "Unknown error" }
-            Remove-Job -Job $job -Force
+        # Runspace finished — check for errors
+        if ($ps.HadErrors) {
+            $errorMsg = ($ps.Streams.Error | Select-Object -First 1).ToString()
+            Write-Log -Message "Device Code Flow failed: $errorMsg" -Level Error
             
-            Write-Log -Message "Device Code Flow failed: $errorMessage" -Level Error
+            if ($errorMsg -match "AADSTS") {
+                Add-CheckResult -Category "Authentication" -CheckName "Device Code Flow" -Status "Fail" `
+                    -Details "Device Code Flow blocked by Azure AD policy: $errorMsg" `
+                    -Recommendation "Request exemption for Device Code Flow or use interactive browser authentication."
+            }
+            else {
+                Add-CheckResult -Category "Authentication" -CheckName "Device Code Flow" -Status "Fail" `
+                    -Details "Device Code Flow authentication failed: $errorMsg"
+            }
             
-            Add-CheckResult -Category "Authentication" -CheckName "Device Code Flow" -Status "Fail" `
-                -Details "Device Code Flow authentication failed: $errorMessage" `
-                -Recommendation "Request exemption for Device Code Flow or use interactive browser authentication."
-            
+            $ps.Dispose()
+            $runspace.Close()
+            $runspace.Dispose()
             return $false
         }
         
-        # Job completed successfully — retrieve the context
-        $context = Receive-Job -Job $job -ErrorAction Stop
-        Remove-Job -Job $job -Force
+        # Retrieve the context from the runspace output
+        $context = $ps.EndInvoke($asyncResult)
+        $ps.Dispose()
+        $runspace.Close()
+        $runspace.Dispose()
         
-        if ($context) {
-            $accountId = $context.Context.Account.Id
-            $tenantId = $context.Context.Tenant.Id
-            $subscriptionId = $context.Context.Subscription.Id
+        if ($context -and $context.Count -gt 0) {
+            $azContext = $context[0]
+            $accountId = $azContext.Context.Account.Id
+            $tenantId = $azContext.Context.Tenant.Id
+            $subscriptionId = $azContext.Context.Subscription.Id
             
             Write-Log -Message "Device Code Flow authentication successful - Account: $accountId, Tenant: $tenantId" -Level Success
             
             Add-CheckResult -Category "Authentication" -CheckName "Device Code Flow" -Status "Pass" `
                 -Details "Successfully authenticated using Device Code Flow. Account: $accountId, Tenant: $tenantId, Subscription: $subscriptionId"
             
-            $script:AzureContext = $context
+            # Re-establish context in the main session using the authenticated account
+            $script:AzureContext = Connect-AzAccount -AccountId $accountId -TenantId $tenantId -ErrorAction SilentlyContinue
+            if (-not $script:AzureContext) {
+                # If re-connect fails, store the runspace context info for reference
+                $script:AzureContext = $azContext
+            }
+            
             return $true
         }
         else {
@@ -2069,11 +2873,9 @@ For more information: https://learn.microsoft.com/azure/migrate/troubleshoot-app
         $errorMessage = $_.Exception.Message
         Write-Log -Message "Device Code Flow authentication failed: $errorMessage" -Level Error
         
-        # Clean up job if it exists
-        if ($job) {
-            Stop-Job -Job $job -ErrorAction SilentlyContinue
-            Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
-        }
+        # Clean up runspace resources
+        if ($ps) { $ps.Dispose() }
+        if ($runspace) { $runspace.Close(); $runspace.Dispose() }
         
         if ($errorMessage -match "AADSTS") {
             Add-CheckResult -Category "Authentication" -CheckName "Device Code Flow" -Status "Fail" `
@@ -2470,9 +3272,15 @@ function Test-ResourceProviders {
             
             $rp = Get-AzResourceProvider -ProviderNamespace $provider -WarningAction SilentlyContinue -ErrorAction SilentlyContinue
             if ($rp -and $rp.RegistrationState -eq 'Registered') {
+                Add-CheckResult -Category "RBAC" -CheckName "Provider: $provider" -Status "Pass" `
+                    -Details "Registered (State: $($rp.RegistrationState))"
                 $registeredCount++
             }
             else {
+                $rpState = if ($rp) { $rp.RegistrationState } else { 'Not Found' }
+                Add-CheckResult -Category "RBAC" -CheckName "Provider: $provider" -Status "Fail" `
+                    -Details "Not registered (State: $rpState)" `
+                    -Recommendation "Register-AzResourceProvider -ProviderNamespace '$provider'"
                 $unregisteredProviders += $provider
             }
         }
@@ -2480,16 +3288,16 @@ function Test-ResourceProviders {
         Write-Progress -Activity "Resource Providers" -Completed
         
         if ($unregisteredProviders.Count -eq 0) {
-            Add-CheckResult -Category "RBAC" -CheckName "Resource Providers" -Status "Pass" `
+            Add-CheckResult -Category "RBAC" -CheckName "Resource Providers" -Status "Pass" -SkipCounter `
                 -Details "All $($script:RequiredResourceProviders.Count) required Resource Providers are registered"
         }
         elseif ($registeredCount -gt 0) {
-            Add-CheckResult -Category "RBAC" -CheckName "Resource Providers" -Status "Warning" `
+            Add-CheckResult -Category "RBAC" -CheckName "Resource Providers" -Status "Warning" -SkipCounter `
                 -Details "$registeredCount/$($script:RequiredResourceProviders.Count) registered. Unregistered: $($unregisteredProviders -join ', ')" `
                 -Recommendation "Register missing providers: $($unregisteredProviders | ForEach-Object { "Register-AzResourceProvider -ProviderNamespace '$_'" } | Out-String)"
         }
         else {
-            Add-CheckResult -Category "RBAC" -CheckName "Resource Providers" -Status "Fail" `
+            Add-CheckResult -Category "RBAC" -CheckName "Resource Providers" -Status "Fail" -SkipCounter `
                 -Details "None of the $($script:RequiredResourceProviders.Count) required Resource Providers are registered" `
                 -Recommendation "Register all providers. Quick command: @('$($script:RequiredResourceProviders -join "','")') | ForEach-Object { Register-AzResourceProvider -ProviderNamespace `$_ }"
         }
@@ -2542,7 +3350,7 @@ function GenerateHTMLReport {
         .summary-card.warning { background: #FFF3CD; border-left: 5px solid #FFC107; }
         .summary-card h3 { font-size: 2em; margin: 10px 0; }
         .summary-card p { color: #666; }
-        table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+        table { width: 100%; border-collapse: collapse; margin: 10px 0; }
         th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
         th { background: #0078D4; color: white; font-weight: 600; }
         tr:hover { background: #f5f5f5; }
@@ -2556,6 +3364,19 @@ function GenerateHTMLReport {
         .footer { margin-top: 40px; padding-top: 20px; border-top: 2px solid #ddd; text-align: center; color: #666; font-size: 0.9em; }
         .metadata { background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 20px 0; }
         .metadata p { margin: 5px 0; }
+        .sub-section { margin: 15px 0; padding: 15px; background: #fafafa; border: 1px solid #e0e0e0; border-radius: 6px; }
+        .sub-section-header { display: flex; justify-content: space-between; align-items: center; cursor: pointer; padding: 8px 0; }
+        .sub-section-header h3 { color: #333; font-size: 1.05em; margin: 0; }
+        .sub-section-header .status { margin-left: 10px; }
+        .sub-section-header .timestamp { color: #888; font-size: 0.85em; margin-left: 15px; }
+        details.sub-section > summary { list-style: none; }
+        details.sub-section > summary::-webkit-details-marker { display: none; }
+        details.sub-section > summary::before { content: '\25B6  '; font-size: 0.8em; color: #0078D4; }
+        details.sub-section[open] > summary::before { content: '\25BC  '; }
+        .detail-table { margin: 10px 0 0 0; }
+        .detail-table th { background: #5a5a5a; font-size: 0.85em; padding: 8px 12px; }
+        .detail-table td { padding: 8px 12px; font-size: 0.9em; }
+        .detail-table .item-name { font-family: 'Consolas', 'Courier New', monospace; font-size: 0.85em; }
     </style>
 </head>
 <body>
@@ -2598,40 +3419,122 @@ function GenerateHTMLReport {
     # Group results by category
     $categories = $script:CheckResults | Group-Object -Property Category
     
+    # Define which summary items own which detail prefixes
+    $detailPrefixes = @('URL:', 'DNS:', 'Provider:', 'Source:')
+    $parentMap = @{
+        'Absolute URL Connectivity'      = 'URL:'
+        'Public Endpoints Connectivity'  = 'URL:'
+        'Wildcard Domain DNS'            = 'DNS:'
+        'Resource Providers'             = 'Provider:'
+        'Source Infrastructure Connectivity' = 'Source:'
+        'Physical Servers Connectivity'  = 'Source:'
+    }
+    
     foreach ($category in $categories) {
-        $htmlReport += @"
+        $htmlReport += "`n        <h2>$($category.Name)</h2>"
         
-        <h2>$($category.Name)</h2>
-        <table>
-            <thead>
-                <tr>
-                    <th>Check</th>
-                    <th>Status</th>
-                    <th>Timestamp</th>
-                </tr>
-            </thead>
-            <tbody>
-"@
+        # Separate main (summary) items from detail items
+        $mainItems = @($category.Group | Where-Object {
+            $isDetail = $false
+            foreach ($prefix in $detailPrefixes) {
+                if ($_.CheckName.StartsWith($prefix)) { $isDetail = $true; break }
+            }
+            -not $isDetail
+        })
         
-        foreach ($result in $category.Group) {
+        $detailItems = @($category.Group | Where-Object {
+            $isDetail = $false
+            foreach ($prefix in $detailPrefixes) {
+                if ($_.CheckName.StartsWith($prefix)) { $isDetail = $true; break }
+            }
+            $isDetail
+        })
+        
+        foreach ($result in $mainItems) {
             $statusClass = $result.Status.ToLower()
-            $htmlReport += @"
-                <tr>
-                    <td>
-                        <strong>$($result.CheckName)</strong>
-                        $(if ($result.Details) { "<div class='details'>$($result.Details)</div>" })
+            
+            # Find associated detail items for this summary
+            $childPrefix = $parentMap[$result.CheckName]
+            $children = @()
+            if ($childPrefix) {
+                $children = @($detailItems | Where-Object { $_.CheckName.StartsWith($childPrefix) })
+            }
+            
+            if ($children.Count -gt 0) {
+                # Render as collapsible sub-section with child detail table
+                $passCount = @($children | Where-Object { $_.Status -eq 'Pass' }).Count
+                $failCount = @($children | Where-Object { $_.Status -eq 'Fail' }).Count
+                $warnCount = @($children | Where-Object { $_.Status -eq 'Warning' }).Count
+                $childSummary = "$passCount passed"
+                if ($failCount -gt 0) { $childSummary += ", $failCount failed" }
+                if ($warnCount -gt 0) { $childSummary += ", $warnCount warnings" }
+                
+                $htmlReport += @"
+
+        <details class="sub-section">
+            <summary>
+                <div class="sub-section-header">
+                    <div>
+                        <h3>$($result.CheckName)</h3>
+                        <div class="details" style="margin-top: 5px;">$($result.Details) &mdash; <em>$childSummary (click to expand)</em></div>
                         $(if ($result.Recommendation) { "<div class='recommendation'><strong>Recommendation:</strong> $($result.Recommendation -replace "`n", "<br/>")</div>" })
-                    </td>
-                    <td><span class="status $statusClass">$($result.Status)</span></td>
-                    <td>$($result.Timestamp.ToString('HH:mm:ss'))</td>
-                </tr>
+                    </div>
+                    <div style="text-align: right; white-space: nowrap;">
+                        <span class="status $statusClass">$($result.Status)</span>
+                        <span class="timestamp">$($result.Timestamp.ToString('HH:mm:ss'))</span>
+                    </div>
+                </div>
+            </summary>
+            <table class="detail-table">
+                <thead>
+                    <tr>
+                        <th>Item</th>
+                        <th>Details</th>
+                        <th>Status</th>
+                        <th>Time</th>
+                    </tr>
+                </thead>
+                <tbody>
 "@
+                foreach ($child in $children) {
+                    $childStatusClass = $child.Status.ToLower()
+                    $childName = $child.CheckName -replace '^(URL|DNS|Provider):\s*', ''
+                    $htmlReport += @"
+                    <tr>
+                        <td class="item-name">$childName</td>
+                        <td>$(if ($child.Details) { $child.Details })$(if ($child.Recommendation) { "<br/><em style='color:#856404;'>$($child.Recommendation)</em>" })</td>
+                        <td><span class="status $childStatusClass">$($child.Status)</span></td>
+                        <td>$($child.Timestamp.ToString('HH:mm:ss'))</td>
+                    </tr>
+"@
+                }
+                
+                $htmlReport += @"
+                </tbody>
+            </table>
+        </details>
+"@
+            }
+            else {
+                # Render as a simple sub-section (no children)
+                $htmlReport += @"
+
+        <div class="sub-section">
+            <div class="sub-section-header">
+                <div>
+                    <h3>$($result.CheckName)</h3>
+                    $(if ($result.Details) { "<div class='details'>$($result.Details)</div>" })
+                    $(if ($result.Recommendation) { "<div class='recommendation'><strong>Recommendation:</strong> $($result.Recommendation -replace "`n", "<br/>")</div>" })
+                </div>
+                <div style="text-align: right; white-space: nowrap;">
+                    <span class="status $statusClass">$($result.Status)</span>
+                    <span class="timestamp">$($result.Timestamp.ToString('HH:mm:ss'))</span>
+                </div>
+            </div>
+        </div>
+"@
+            }
         }
-        
-        $htmlReport += @"
-            </tbody>
-        </table>
-"@
     }
     
     # Add recommendations section

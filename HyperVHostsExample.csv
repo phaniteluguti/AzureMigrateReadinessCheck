@@ -1,0 +1,4 @@
+hostname,ip,port
+hvhost01,10.0.2.10,5985
+hvhost02,10.0.2.11,5986
+hvhost03,10.0.2.12,5985

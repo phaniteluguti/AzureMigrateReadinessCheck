@@ -141,6 +141,88 @@
 
 ---
 
+## Azure Migrate Project Region Validation Examples
+
+### Validate Region in Non-Interactive Mode
+```powershell
+.\AzureMigrateApplianceReadinessCheck.ps1 `
+    -InteractiveMode $false `
+    -DiscoveryType VMware `
+    -MigrationApproach Agentless `
+    -UrlTestMode Wildcard `
+    -ProjectRegion "eastus"
+# Validates that East US supports Azure Migrate project creation
+```
+
+### Interactive Region Selection
+```powershell
+.\AzureMigrateApplianceReadinessCheck.ps1
+# During interactive flow, you'll see a numbered list of supported regions
+# filtered by your cloud type (Public or Government)
+```
+
+---
+
+## Source Infrastructure Connectivity Examples
+
+### VMware Agentless - vCenter + ESXi via CSV (Non-Interactive)
+```powershell
+.\AzureMigrateApplianceReadinessCheck.ps1 `
+    -InteractiveMode $false `
+    -DiscoveryType VMware `
+    -MigrationApproach Agentless `
+    -UrlTestMode Wildcard `
+    -VCenterServersCsv ".\VCenterExample.csv" `
+    -AuthMethod DeviceCodeFlow
+```
+> CSV format (`hostname,ip,type`): vCenter gets TCP 443 test; ESXi hosts get TCP 443 + 902
+
+### VMware AgentBased - vCenter Only via CSV
+```powershell
+.\AzureMigrateApplianceReadinessCheck.ps1 `
+    -InteractiveMode $false `
+    -DiscoveryType VMware `
+    -MigrationApproach AgentBased `
+    -UrlTestMode Absolute `
+    -AzureRegion EA `
+    -VCenterServersCsv ".\VCenterExample.csv" `
+    -AuthMethod DeviceCodeFlow
+```
+> AgentBased: only vCenter entries tested on TCP 443 (ESXi rows are tested on 443 only, no 902)
+
+### Hyper-V Hosts via CSV (Non-Interactive)
+```powershell
+.\AzureMigrateApplianceReadinessCheck.ps1 `
+    -InteractiveMode $false `
+    -DiscoveryType HyperV `
+    -UrlTestMode Wildcard `
+    -HyperVHostsCsv ".\HyperVHostsExample.csv" `
+    -AuthMethod DeviceCodeFlow
+```
+> CSV format (`hostname,ip,port`): each host tested on specified WinRM port (5985 or 5986)
+
+### Physical Servers with OS Column (Targeted Port Testing)
+```powershell
+.\AzureMigrateApplianceReadinessCheck.ps1 `
+    -InteractiveMode $false `
+    -DiscoveryType Physical `
+    -UrlTestMode Absolute `
+    -AzureRegion WE `
+    -PhysicalServersCSV ".\PhysicalServersExample.csv" `
+    -AuthMethod DeviceCodeFlow
+```
+> CSV format (`hostname,ip,os`): Windows servers get WinRM 5985/5986, Linux servers get SSH 22
+
+### Interactive Mode - Source Connectivity Prompt
+```powershell
+# During interactive run, the script will ask:
+# "Would you like to test connectivity to your source infrastructure? (Y/N)"
+# If Y: prompts for target addresses inline or via CSV
+.\AzureMigrateApplianceReadinessCheck.ps1 -DiscoveryType VMware -MigrationApproach Agentless
+```
+
+---
+
 ## Private Endpoints Examples
 
 ### VMware with Private Endpoints

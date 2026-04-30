@@ -161,11 +161,15 @@ flowchart TD
     F2 --> G
     G --> G1{Public?}
     G1 -->|Yes| G2[Select URL Test Mode]
-    G1 -->|No| H[🌐 Network Connectivity Tests]
+    G1 -->|No| R1
     G2 -->|Absolute| G3[Select Azure Region from CSV]
     G2 -->|Wildcard| G4[Select Cloud Type]
-    G3 --> H
-    G4 --> H
+    G3 --> R1[🌍 Azure Migrate Region Check]
+    G4 --> R1
+    R1 --> SC{Source Connectivity?}
+    SC -->|Yes| SC1[Test TCP Ports on Source Infra]
+    SC -->|No/Skip| H
+    SC1 --> H[🌐 Network Connectivity Tests]
     H --> I[Prerequisite Checks]
     I --> J[🔐 Azure Authentication]
     J --> K[✅ RBAC Validation]
@@ -239,7 +243,11 @@ flowchart TD
 | `AuthMethod` | String | No | 'DeviceCodeFlow' or 'EntraIDApp' | Prompted |
 | `SubscriptionId` | String | No | Azure Subscription ID | Prompted |
 | `ResourceGroupName` | String | No | Azure Resource Group name | Prompted |
-| `PhysicalServersCSV` | String | No | Path to CSV file (hostname,ip) | Prompted |
+| `PhysicalServersCSV` | String | No | Path to CSV file (hostname,ip[,os]) | Prompted |
+| `VCenterServersCsv` | String | No | Path to CSV for vCenter/ESXi targets (hostname,ip,type) | None |
+| `HyperVHostsCsv` | String | No | Path to CSV for Hyper-V hosts (hostname,ip,port) | None |
+| `TestSourceConnectivity` | Boolean | No | Enable source connectivity tests (non-interactive) | `$false` |
+| `ProjectRegion` | String | No | Azure region for Migrate project (e.g., 'eastus', 'westeurope'). Validates region availability. | Prompted |
 | `LogPath` | String | No | Path for log file | Script directory |
 | `ReportPath` | String | No | Path for HTML report | Script directory |
 
@@ -278,14 +286,16 @@ flowchart TD
 - Discovery: Server metadata and performance data
 - Network connectivity to discovery endpoints
 - Physical server connectivity validation (via CSV)
+- **Optional source infrastructure connectivity testing** (vCenter, ESXi, Hyper-V hosts)
 
-**CSV Format** - Use the included **[PhysicalServersExample.csv](PhysicalServersExample.csv)** as a template:
+**Physical Servers CSV Format** - Use the included **[PhysicalServersExample.csv](PhysicalServersExample.csv)** as a template:
 ```csv
-hostname,ip
-server01,192.168.1.10
-server02,192.168.1.11
-webserver,10.20.30.40
+hostname,ip,os
+server01,192.168.1.10,Windows
+server02,192.168.1.11,Linux
+webserver,10.20.30.40,Windows
 ```
+> The `os` column is optional. Without it, all ports (WinRM 5985/5986 + SSH 22) are tested per server.
 
 **Example**:
 ```powershell
@@ -506,7 +516,7 @@ New-AzRoleAssignment `
 **Checklist**:
 - ✅ CSV format is correct (hostname,ip)
 - ✅ Network connectivity from appliance to servers
-- ✅ Firewall allows ICMP (ping)
+- ✅ Firewall allows required ports (WinRM 5985/5986, SSH 22)
 - ✅ DNS resolution works
 - ✅ IP addresses are correct
 
@@ -549,18 +559,33 @@ For issues with:
 
 ## 📝 Version History
 
-### Version 3.0 (April 2, 2026)
+> **Tip:** Each version is tagged in git. Use `git checkout v3.0.0` to access a specific version, or download from [GitHub Releases](https://github.com/phaniteluguti/AzureMigrateReadinessCheck/releases).
+
+### Version 3.1.0 (April 29, 2026) — `v3.1.0`
+- **Azure Migrate project region availability check**: Validates that the selected region supports Azure Migrate project creation using a hardcoded list of 35 supported regions (31 public + 2 Azure Gov + 1 China 21Vianet)
+- **Semantic versioning**: Adopted semantic versioning (MAJOR.MINOR.PATCH) for clearer release tracking
+- New parameter: `-ProjectRegion` — specify the Azure Migrate project deployment region for validation
+- Interactive mode shows a numbered selection menu of supported regions filtered by cloud type
+- Non-interactive mode validates the `-ProjectRegion` value or emits a warning if omitted
+
+### Version 3.0.0 (April 2, 2026) — `v3.0.0`
 - **New interactive flow**: Welcome Banner → Source Environment → Migration Approach (VMware only) → Endpoint Type → URL Test Mode → Region/Cloud
 - **Absolute URL testing mode**: Tests exact region-specific URLs from an external CSV file (`MigrateAppliance_ListofURLs_v3.0_combined.csv`)
 - **Wildcard URL testing mode**: Retains original DNS + HTTP verification (now selectable)
 - **CSV-driven region selection**: 30 Azure regions, ~45 URLs per region filtered by discovery type
 - **Auto-set migration approach**: Hyper-V defaults to Agentless, Physical defaults to AgentBased (only VMware prompts)
-- New parameters: `-UrlTestMode`, `-AzureRegion`, `-CsvPath`
+- **Source infrastructure connectivity testing** (optional): Test connectivity to vCenter/ESXi, Hyper-V hosts, or Physical servers on required ports
+  - VMware Agentless: vCenter TCP 443 + ESXi TCP 443/902
+  - VMware AgentBased: vCenter TCP 443 only
+  - Hyper-V: WinRM 5985 or 5986 per host
+  - Physical: WinRM 5985/5986 (Windows) or SSH 22 (Linux)
+  - Supports inline input for single targets and CSV for bulk
+- New parameters: `-UrlTestMode`, `-AzureRegion`, `-CsvPath`, `-VCenterServersCsv`, `-HyperVHostsCsv`, `-TestSourceConnectivity`
 - HTML report now shows URL Test Mode and Azure Region metadata
 - Log file includes full configuration summary after setup
 - Removed info popup; replaced with inline welcome banner
 
-### Version 2.0 (April 2, 2026)
+### Version 2.0.0 (April 2, 2026) — `v2.0.0`
 - Added Government cloud (Azure Gov) URL validation
 - Added FIPS mode, network adapter, and time sync checks
 - Added Resource Provider registration validation
@@ -572,7 +597,7 @@ For issues with:
 - Fixed PowerShell 5.1 parse compatibility (here-string, Unicode characters)
 - Updated HTML report metadata
 
-### Version 1.0 (April 2, 2026)
+### Version 1.0.0 (April 2, 2026) — `v1.0.0`
 - Initial release
 - Support for Agentless (VMware, Hyper-V) and Agent-based (Physical) migrations
 - Device Code Flow and Entra ID App Registration authentication
