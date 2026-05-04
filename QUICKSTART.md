@@ -28,7 +28,7 @@ The script will guide you through:
 5. **Select URL Testing Mode** - Wildcard (DNS) or Absolute (region-specific CSV)
 6. **Select Region** - If Absolute mode, pick your Azure region from the CSV
 7. **Azure Migrate Region Check** - Validate that your project region supports Azure Migrate
-8. **Source Connectivity Test** *(Optional)* - Test connectivity to vCenter/ESXi, Hyper-V hosts, or Physical servers on required ports
+8. **Source Connectivity Test** *(Optional)* - Test connectivity to vCenter/ESXi, Hyper-V hosts, or Physical servers. Enter comma-separated IPs, use `csv:` prefix for CSV, or provide via `-VCenterServers`/`-HyperVHosts` parameters
 9. **Network Testing** - Test connectivity to Azure endpoints
 10. **Authentication** - Sign in to Azure via browser (Device Code Flow)
 11. **Permissions Check** - Validate Contributor role and resource providers

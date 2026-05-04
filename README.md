@@ -245,7 +245,9 @@ flowchart TD
 | `ResourceGroupName` | String | No | Azure Resource Group name | Prompted |
 | `PhysicalServersCSV` | String | No | Path to CSV file (hostname,ip[,os]) | Prompted |
 | `VCenterServersCsv` | String | No | Path to CSV for vCenter/ESXi targets (hostname,ip,type) | None |
+| `VCenterServers` | String | No | Comma-separated vCenter/ESXi IPs (e.g., "10.0.0.2,10.0.0.5:ESXi") | None |
 | `HyperVHostsCsv` | String | No | Path to CSV for Hyper-V hosts (hostname,ip,port) | None |
+| `HyperVHosts` | String | No | Comma-separated Hyper-V host IPs (e.g., "10.0.0.10,10.0.0.11:5986") | None |
 | `TestSourceConnectivity` | Boolean | No | Enable source connectivity tests (non-interactive) | `$false` |
 | `ProjectRegion` | String | No | Azure region for Migrate project (e.g., 'eastus', 'westeurope'). Validates region availability. | Prompted |
 | `LogPath` | String | No | Path for log file | Script directory |
@@ -580,7 +582,7 @@ For issues with:
   - Hyper-V: WinRM 5985 or 5986 per host
   - Physical: WinRM 5985/5986 (Windows) or SSH 22 (Linux)
   - Supports inline input for single targets and CSV for bulk
-- New parameters: `-UrlTestMode`, `-AzureRegion`, `-CsvPath`, `-VCenterServersCsv`, `-HyperVHostsCsv`, `-TestSourceConnectivity`
+- New parameters: `-UrlTestMode`, `-AzureRegion`, `-CsvPath`, `-VCenterServersCsv`, `-VCenterServers`, `-HyperVHostsCsv`, `-HyperVHosts`, `-TestSourceConnectivity`
 - HTML report now shows URL Test Mode and Azure Region metadata
 - Log file includes full configuration summary after setup
 - Removed info popup; replaced with inline welcome banner

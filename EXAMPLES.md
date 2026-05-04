@@ -165,6 +165,18 @@
 
 ## Source Infrastructure Connectivity Examples
 
+### VMware - Quick Comma-Separated Input (Non-Interactive)
+```powershell
+.\AzureMigrateApplianceReadinessCheck.ps1 `
+    -InteractiveMode $false `
+    -DiscoveryType VMware `
+    -MigrationApproach Agentless `
+    -UrlTestMode Wildcard `
+    -VCenterServers "10.0.0.2,10.0.0.5:ESXi,10.0.0.6:ESXi" `
+    -AuthMethod DeviceCodeFlow
+```
+> Default type is vCenter. Append `:ESXi` to specify ESXi hosts (get TCP 443 + 902 for Agentless)
+
 ### VMware Agentless - vCenter + ESXi via CSV (Non-Interactive)
 ```powershell
 .\AzureMigrateApplianceReadinessCheck.ps1 `
@@ -189,6 +201,17 @@
     -AuthMethod DeviceCodeFlow
 ```
 > AgentBased: only vCenter entries tested on TCP 443 (ESXi rows are tested on 443 only, no 902)
+
+### Hyper-V - Quick Comma-Separated Input (Non-Interactive)
+```powershell
+.\AzureMigrateApplianceReadinessCheck.ps1 `
+    -InteractiveMode $false `
+    -DiscoveryType HyperV `
+    -UrlTestMode Wildcard `
+    -HyperVHosts "10.0.0.10,10.0.0.11:5986,10.0.0.12" `
+    -AuthMethod DeviceCodeFlow
+```
+> Default port is 5985 (HTTP WinRM). Append `:5986` for HTTPS WinRM hosts
 
 ### Hyper-V Hosts via CSV (Non-Interactive)
 ```powershell

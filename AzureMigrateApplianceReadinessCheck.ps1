@@ -61,13 +61,23 @@
     Path to CSV file containing vCenter/ESXi targets (hostname,ip,type format). Type = vCenter or ESXi.
     When provided in non-interactive mode, source connectivity tests are auto-enabled.
 
+.PARAMETER VCenterServers
+    Comma-separated list of vCenter/ESXi servers for quick connectivity testing without a CSV file.
+    Format: "ip1,ip2,ip3" (all treated as vCenter) or "ip1:vCenter,ip2:ESXi" to specify type.
+    Example: -VCenterServers "10.0.0.2,10.0.0.5:ESXi"
+
 .PARAMETER HyperVHostsCsv
     Path to CSV file containing Hyper-V hosts (hostname,ip,port format). Port = 5985 or 5986.
     When provided in non-interactive mode, source connectivity tests are auto-enabled.
 
+.PARAMETER HyperVHosts
+    Comma-separated list of Hyper-V hosts for quick connectivity testing without a CSV file.
+    Format: "ip1,ip2,ip3" (all use default port 5985) or "ip1:5986,ip2:5985" to specify WinRM port.
+    Example: -HyperVHosts "10.0.0.10,10.0.0.11:5986"
+
 .PARAMETER TestSourceConnectivity
     Enable source infrastructure connectivity tests in non-interactive mode.
-    Requires -VCenterServersCsv or -HyperVHostsCsv to be provided for VMware/HyperV.
+    Requires -VCenterServersCsv/-VCenterServers or -HyperVHostsCsv/-HyperVHosts for VMware/HyperV.
 
 .PARAMETER ProjectRegion
     Azure region where the Azure Migrate project will be deployed (metadata storage).
@@ -153,7 +163,13 @@ param(
     [string]$VCenterServersCsv,
     
     [Parameter(Mandatory = $false)]
+    [string]$VCenterServers,
+    
+    [Parameter(Mandatory = $false)]
     [string]$HyperVHostsCsv,
+    
+    [Parameter(Mandatory = $false)]
+    [string]$HyperVHosts,
     
     [Parameter(Mandatory = $false)]
     [bool]$TestSourceConnectivity = $false,
@@ -1447,9 +1463,11 @@ function Get-SourceConnectivityConfig {
     [CmdletBinding()]
     param()
     
-    # Non-interactive: auto-enable if CSV params provided
+    # Non-interactive: auto-enable if CSV or inline params provided
     $autoEnabled = (-not [string]::IsNullOrWhiteSpace($VCenterServersCsv)) -or
+                   (-not [string]::IsNullOrWhiteSpace($VCenterServers)) -or
                    (-not [string]::IsNullOrWhiteSpace($HyperVHostsCsv)) -or
+                   (-not [string]::IsNullOrWhiteSpace($HyperVHosts)) -or
                    $TestSourceConnectivity
     
     if ($InteractiveMode) {
@@ -1494,20 +1512,21 @@ function Get-VMwareSourceTargets {
     [CmdletBinding()]
     param()
     
-    if ($InteractiveMode -and [string]::IsNullOrWhiteSpace($VCenterServersCsv)) {
+    if ($InteractiveMode -and [string]::IsNullOrWhiteSpace($VCenterServersCsv) -and [string]::IsNullOrWhiteSpace($VCenterServers)) {
         Write-Host "`n--- VMware Source Targets ---`n" -ForegroundColor Yellow
-        Write-Host "Provide vCenter Server address, or a CSV file path for bulk input." -ForegroundColor Gray
+        Write-Host "Provide vCenter/ESXi server addresses (comma-separated for multiple)," -ForegroundColor Gray
+        Write-Host "or a CSV file path for bulk input." -ForegroundColor Gray
         Write-Host "CSV format: hostname,ip,type (type = vCenter or ESXi)" -ForegroundColor Gray
         Write-Host "Prefix with 'csv:' to provide a CSV file (e.g., csv:C:\targets.csv)`n" -ForegroundColor Gray
         
-        $input = Read-Host "Enter vCenter IP/hostname or csv:<path>"
+        $vcInput = Read-Host "Enter vCenter/ESXi IPs (comma-separated) or csv:<path>"
         
-        if ([string]::IsNullOrWhiteSpace($input)) {
+        if ([string]::IsNullOrWhiteSpace($vcInput)) {
             Write-Log -Message "No vCenter target provided" -Level Warning
             return
         }
         
-        if ($input -match '^csv:(.+)$') {
+        if ($vcInput -match '^csv:(.+)$') {
             $csvPath = $Matches[1].Trim()
             $csvTargets = Import-SourceTargetsCsv -CsvPath $csvPath -ExpectedColumns @('hostname', 'ip', 'type') -TargetType 'VMware'
             if ($csvTargets) {
@@ -1525,16 +1544,29 @@ function Get-VMwareSourceTargets {
             return
         }
         
-        # Single vCenter inline input
-        $script:SourceTargets += [PSCustomObject]@{
-            Hostname = $input
-            IP       = $input
-            Type     = 'vCenter'
-            Ports    = @(443)
+        # Comma-separated or single inline input — parse type suffix if present (ip:ESXi)
+        $servers = $vcInput -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
+        foreach ($entry in $servers) {
+            if ($entry -match '^(.+):([Ee][Ss][Xx][Ii])$') {
+                $addr = $Matches[1].Trim()
+                $targetType = 'ESXi'
+                $ports = if ($script:MigrationApproach -eq 'Agentless') { @(443, 902) } else { @(443) }
+            } else {
+                $addr = $entry -replace ':vCenter$', '' -replace ':vcenter$', ''
+                $targetType = 'vCenter'
+                $ports = @(443)
+            }
+            $script:SourceTargets += [PSCustomObject]@{
+                Hostname = $addr
+                IP       = $addr
+                Type     = $targetType
+                Ports    = $ports
+            }
         }
         
-        # For Agentless, offer ESXi host testing
-        if ($script:MigrationApproach -eq 'Agentless') {
+        # For Agentless, offer ESXi host testing if none provided yet
+        $hasEsxi = $script:SourceTargets | Where-Object { $_.Type -eq 'ESXi' }
+        if ($script:MigrationApproach -eq 'Agentless' -and -not $hasEsxi) {
             Write-Host "`nAgentless migration requires direct access to ESXi hosts (TCP 443 + 902)." -ForegroundColor Gray
             $esxiResponse = Read-Host "Would you like to test ESXi host connectivity? (Y/N, default: N)"
             
@@ -1571,36 +1603,57 @@ function Get-VMwareSourceTargets {
                 }
             }
         }
-        else {
+        elseif ($script:MigrationApproach -ne 'Agentless') {
             Write-Host "`nAgent-based migration does not require direct ESXi host access - skipping." -ForegroundColor Gray
             Write-Log -Message "Agent-based: ESXi host connectivity test not required" -Level Info
         }
     }
     else {
-        # Non-interactive or CSV param provided
-        $csvPath = $VCenterServersCsv
-        if ([string]::IsNullOrWhiteSpace($csvPath)) {
-            if ($TestSourceConnectivity) {
-                Write-Log -Message "TestSourceConnectivity enabled but no VCenterServersCsv provided for VMware" -Level Warning
-                Add-CheckResult -Category "Configuration" -CheckName "Source Connectivity Test" -Status "Warning" `
-                    -Details "Source connectivity test enabled but no -VCenterServersCsv parameter provided" `
-                    -Recommendation "Provide -VCenterServersCsv parameter with path to CSV file (hostname,ip,type)"
-            }
-            return
-        }
-        
-        $csvTargets = Import-SourceTargetsCsv -CsvPath $csvPath -ExpectedColumns @('hostname', 'ip', 'type') -TargetType 'VMware'
-        if ($csvTargets) {
-            foreach ($target in $csvTargets) {
-                $targetType = if ($target.type -match '^(?:e|E)') { 'ESXi' } else { 'vCenter' }
-                $ports = if ($targetType -eq 'ESXi' -and $script:MigrationApproach -eq 'Agentless') { @(443, 902) } else { @(443) }
+        # Non-interactive: handle inline comma-separated or CSV param
+        if (-not [string]::IsNullOrWhiteSpace($VCenterServers)) {
+            $servers = $VCenterServers -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
+            foreach ($entry in $servers) {
+                if ($entry -match '^(.+):([Ee][Ss][Xx][Ii])$') {
+                    $addr = $Matches[1].Trim()
+                    $targetType = 'ESXi'
+                    $ports = if ($script:MigrationApproach -eq 'Agentless') { @(443, 902) } else { @(443) }
+                } else {
+                    $addr = $entry -replace ':vCenter$', '' -replace ':vcenter$', ''
+                    $targetType = 'vCenter'
+                    $ports = @(443)
+                }
                 $script:SourceTargets += [PSCustomObject]@{
-                    Hostname = $target.hostname
-                    IP       = $target.ip
+                    Hostname = $addr
+                    IP       = $addr
                     Type     = $targetType
                     Ports    = $ports
                 }
             }
+            Write-Log -Message "Loaded $($servers.Count) VMware target(s) from -VCenterServers parameter" -Level Info
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($VCenterServersCsv)) {
+            $csvTargets = Import-SourceTargetsCsv -CsvPath $VCenterServersCsv -ExpectedColumns @('hostname', 'ip', 'type') -TargetType 'VMware'
+            if ($csvTargets) {
+                foreach ($target in $csvTargets) {
+                    $targetType = if ($target.type -match '^(?:e|E)') { 'ESXi' } else { 'vCenter' }
+                    $ports = if ($targetType -eq 'ESXi' -and $script:MigrationApproach -eq 'Agentless') { @(443, 902) } else { @(443) }
+                    $script:SourceTargets += [PSCustomObject]@{
+                        Hostname = $target.hostname
+                        IP       = $target.ip
+                        Type     = $targetType
+                        Ports    = $ports
+                    }
+                }
+            }
+        }
+        else {
+            if ($TestSourceConnectivity) {
+                Write-Log -Message "TestSourceConnectivity enabled but no VCenterServers or VCenterServersCsv provided" -Level Warning
+                Add-CheckResult -Category "Configuration" -CheckName "Source Connectivity Test" -Status "Warning" `
+                    -Details "Source connectivity test enabled but no VMware targets provided" `
+                    -Recommendation "Provide -VCenterServers (comma-separated) or -VCenterServersCsv (CSV path)"
+            }
+            return
         }
     }
 }
@@ -1613,20 +1666,22 @@ function Get-HyperVSourceTargets {
     [CmdletBinding()]
     param()
     
-    if ($InteractiveMode -and [string]::IsNullOrWhiteSpace($HyperVHostsCsv)) {
+    if ($InteractiveMode -and [string]::IsNullOrWhiteSpace($HyperVHostsCsv) -and [string]::IsNullOrWhiteSpace($HyperVHosts)) {
         Write-Host "`n--- Hyper-V Source Targets ---`n" -ForegroundColor Yellow
-        Write-Host "Provide Hyper-V host address, or a CSV file path for bulk input." -ForegroundColor Gray
+        Write-Host "Provide Hyper-V host addresses (comma-separated for multiple)," -ForegroundColor Gray
+        Write-Host "or a CSV file path for bulk input." -ForegroundColor Gray
         Write-Host "CSV format: hostname,ip,port (port = 5985 or 5986)" -ForegroundColor Gray
+        Write-Host "Append :5986 to use HTTPS WinRM (e.g., 10.0.0.10:5986). Default port: 5985." -ForegroundColor Gray
         Write-Host "Prefix with 'csv:' to provide a CSV file (e.g., csv:C:\hosts.csv)`n" -ForegroundColor Gray
         
-        $input = Read-Host "Enter Hyper-V host IP/hostname or csv:<path>"
+        $hvInput = Read-Host "Enter Hyper-V host IPs (comma-separated) or csv:<path>"
         
-        if ([string]::IsNullOrWhiteSpace($input)) {
+        if ([string]::IsNullOrWhiteSpace($hvInput)) {
             Write-Log -Message "No Hyper-V host target provided" -Level Warning
             return
         }
         
-        if ($input -match '^csv:(.+)$') {
+        if ($hvInput -match '^csv:(.+)$') {
             $csvPath = $Matches[1].Trim()
             $csvTargets = Import-SourceTargetsCsv -CsvPath $csvPath -ExpectedColumns @('hostname', 'ip', 'port') -TargetType 'HyperV'
             if ($csvTargets) {
@@ -1643,60 +1698,67 @@ function Get-HyperVSourceTargets {
             return
         }
         
-        # Single host inline input
-        $portChoice = Read-Host "WinRM port for this host (5985 for HTTP / 5986 for HTTPS, default: 5985)"
-        $port = if ($portChoice -eq '5986') { 5986 } else { 5985 }
-        
-        $script:SourceTargets += [PSCustomObject]@{
-            Hostname = $input
-            IP       = $input
-            Type     = 'HyperV'
-            Ports    = @($port)
-        }
-        
-        # Offer to add more hosts
-        while ($true) {
-            $more = Read-Host "`nAdd another Hyper-V host? (Y/N, default: N)"
-            if ($more -notmatch '^[Yy]') { break }
-            
-            $nextHost = Read-Host "Enter Hyper-V host IP/hostname"
-            if ([string]::IsNullOrWhiteSpace($nextHost)) { break }
-            
-            $nextPort = Read-Host "WinRM port (5985/5986, default: 5985)"
-            $port = if ($nextPort -eq '5986') { 5986 } else { 5985 }
-            
+        # Comma-separated inline input — parse port suffix if present (ip:5986)
+        $hosts = $hvInput -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
+        foreach ($entry in $hosts) {
+            if ($entry -match '^(.+):(5985|5986)$') {
+                $addr = $Matches[1].Trim()
+                $port = [int]$Matches[2]
+            } else {
+                $addr = $entry
+                $port = 5985
+            }
             $script:SourceTargets += [PSCustomObject]@{
-                Hostname = $nextHost
-                IP       = $nextHost
+                Hostname = $addr
+                IP       = $addr
                 Type     = 'HyperV'
                 Ports    = @($port)
             }
         }
     }
     else {
-        # Non-interactive or CSV param provided
-        $csvPath = $HyperVHostsCsv
-        if ([string]::IsNullOrWhiteSpace($csvPath)) {
-            if ($TestSourceConnectivity) {
-                Write-Log -Message "TestSourceConnectivity enabled but no HyperVHostsCsv provided for HyperV" -Level Warning
-                Add-CheckResult -Category "Configuration" -CheckName "Source Connectivity Test" -Status "Warning" `
-                    -Details "Source connectivity test enabled but no -HyperVHostsCsv parameter provided" `
-                    -Recommendation "Provide -HyperVHostsCsv parameter with path to CSV file (hostname,ip,port)"
-            }
-            return
-        }
-        
-        $csvTargets = Import-SourceTargetsCsv -CsvPath $csvPath -ExpectedColumns @('hostname', 'ip', 'port') -TargetType 'HyperV'
-        if ($csvTargets) {
-            foreach ($target in $csvTargets) {
-                $port = if ($target.port -match '^\d+$') { [int]$target.port } else { 5985 }
+        # Non-interactive: handle inline comma-separated or CSV param
+        if (-not [string]::IsNullOrWhiteSpace($HyperVHosts)) {
+            $hosts = $HyperVHosts -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
+            foreach ($entry in $hosts) {
+                if ($entry -match '^(.+):(5985|5986)$') {
+                    $addr = $Matches[1].Trim()
+                    $port = [int]$Matches[2]
+                } else {
+                    $addr = $entry
+                    $port = 5985
+                }
                 $script:SourceTargets += [PSCustomObject]@{
-                    Hostname = $target.hostname
-                    IP       = $target.ip
+                    Hostname = $addr
+                    IP       = $addr
                     Type     = 'HyperV'
                     Ports    = @($port)
                 }
             }
+            Write-Log -Message "Loaded $($hosts.Count) Hyper-V target(s) from -HyperVHosts parameter" -Level Info
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($HyperVHostsCsv)) {
+            $csvTargets = Import-SourceTargetsCsv -CsvPath $HyperVHostsCsv -ExpectedColumns @('hostname', 'ip', 'port') -TargetType 'HyperV'
+            if ($csvTargets) {
+                foreach ($target in $csvTargets) {
+                    $port = if ($target.port -match '^\d+$') { [int]$target.port } else { 5985 }
+                    $script:SourceTargets += [PSCustomObject]@{
+                        Hostname = $target.hostname
+                        IP       = $target.ip
+                        Type     = 'HyperV'
+                        Ports    = @($port)
+                    }
+                }
+            }
+        }
+        else {
+            if ($TestSourceConnectivity) {
+                Write-Log -Message "TestSourceConnectivity enabled but no HyperVHosts or HyperVHostsCsv provided" -Level Warning
+                Add-CheckResult -Category "Configuration" -CheckName "Source Connectivity Test" -Status "Warning" `
+                    -Details "Source connectivity test enabled but no Hyper-V targets provided" `
+                    -Recommendation "Provide -HyperVHosts (comma-separated) or -HyperVHostsCsv (CSV path)"
+            }
+            return
         }
     }
 }
